@@ -1,0 +1,26 @@
+template: custom-kernel-llm
+name: custom_kernel_llm
+
+# Model architecture
+model_config: debug
+d_model: 768
+n_heads: 12
+n_layers: 12
+max_len: 256
+dropout: 0.1
+
+# Training
+lr: 0.0003
+weight_decay: 0.1
+batch_size: 12
+epochs: 10
+warmup_steps: 100
+
+# Kernel backend: torch, triton, cuda
+kernel_backend: torch
+compile_model: false
+use_flash_attn: false
+
+# Device: auto, cpu, cuda, mps
+device: auto
+seed: 42

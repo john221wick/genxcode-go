@@ -1,0 +1,255 @@
+import argparse
+import torch
+from torch.utils.data import DataLoader, random_split
+
+from config import GPTConfig, GPT_DEBUG, GPT2_SMALL
+from src.model import GPTModel
+from src.dataset import TextDataset
+from src.tokenizer import Tokenizer
+from src.trainer import Trainer
+from src.generate_utils import generate
+from kernels import KernelBackend, NORM_REGISTRY, FFN_REGISTRY, ATTN_REGISTRY
+
+
+def get_device(override=None):
+    if override:
+        return override
+    if torch.cuda.is_available():
+        return "cuda"
+    elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+        return "mps"
+    return "cpu"
+
+
+def load_data(cfg, tokenizer):
+    print("Loading dataset...")
+    try:
+        from datasets import load_dataset
+
+        dataset = load_dataset("wikitext", "wikitext-2-raw-v1", split="train")
+        text = "\n\n".join(dataset["text"])
+    except ImportError:
+        import urllib.request
+
+        print("datasets not installed, downloading tiny shakespeare...")
+        url = "https://raw.githubusercontent.com/karpathy/char-rnn/master/data/tinyshakespeare/input.txt"
+        resp = urllib.request.urlopen(url)
+        text = resp.read().decode("utf-8")
+
+    token_ids = tokenizer.encode(text)
+    print(f"Dataset: {len(token_ids):,} tokens")
+
+    max_len = cfg.max_len
+    stride = max_len // 2
+    full_dataset = TextDataset(token_ids, max_len, stride=stride)
+
+    train_size = int(0.9 * len(full_dataset))
+    val_size = len(full_dataset) - train_size
+    train_dataset, val_dataset = random_split(full_dataset, [train_size, val_size])
+
+    train_loader = DataLoader(train_dataset, batch_size=cfg.batch_size, shuffle=True)
+    val_loader = DataLoader(val_dataset, batch_size=cfg.batch_size, shuffle=False)
+
+    return train_loader, val_loader
+
+
+def cmd_train(args):
+    cfg = GPT_DEBUG if args.config == "debug" else GPT2_SMALL
+    cfg.kernel_backend = args.kernel
+    cfg.compile_model = args.compile
+    cfg.use_flash_attn = args.flash
+    cfg.device = get_device(args.device)
+    cfg.epochs = args.epochs
+
+    print(f"\n{'=' * 60}")
+    print(f"Training Configuration")
+    print(f"{'=' * 60}")
+    print(f"  Device:          {cfg.device}")
+    print(f"  Kernel backend:  {cfg.kernel_backend}")
+    print(f"  torch.compile:   {cfg.compile_model}")
+    print(f"  FlashAttention:   {cfg.use_flash_attn}")
+    print(f"  d_model:         {cfg.d_model}")
+    print(f"  n_heads:         {cfg.n_heads}")
+    print(f"  n_layers:        {cfg.n_layers}")
+    print(
+        f"  Available kernels: norm={list(NORM_REGISTRY.keys())}, "
+        f"ffn={list(FFN_REGISTRY.keys())}, attn={list(ATTN_REGISTRY.keys())}"
+    )
+    print(f"{'=' * 60}\n")
+
+    tokenizer = Tokenizer()
+    cfg.vocab_size = tokenizer.vocab_size
+
+    train_loader, val_loader = load_data(cfg, tokenizer)
+
+    model = GPTModel(cfg).to(cfg.device)
+    if cfg.compile_model and cfg.device == "cuda":
+        print("Compiling model with torch.compile()...")
+        model = torch.compile(model)
+
+    optimizer = torch.optim.AdamW(
+        model.parameters(), lr=cfg.lr, weight_decay=cfg.weight_decay
+    )
+
+    trainer = Trainer(model, optimizer, train_loader, val_loader, cfg)
+    trainer.train()
+
+
+def cmd_profile(args):
+    cfg = GPT_DEBUG if args.config == "debug" else GPT2_SMALL
+    cfg.kernel_backend = args.kernel
+    cfg.device = get_device(args.device)
+
+    tokenizer = Tokenizer()
+    cfg.vocab_size = tokenizer.vocab_size
+
+    model = GPTModel(cfg).to(cfg.device)
+    train_loader, _ = load_data(cfg, tokenizer)
+
+    from profiling.profiler import PyTorchProfiler
+
+    profiler = PyTorchProfiler(model, cfg.device, output_dir=args.output_dir)
+    profiler.profile(train_loader, num_steps=args.num_steps)
+
+    profiler.memory_stats()
+
+
+def cmd_benchmark(args):
+    cfg = GPT_DEBUG if args.config == "debug" else GPT2_SMALL
+    cfg.device = get_device(args.device)
+
+    tokenizer = Tokenizer()
+    cfg.vocab_size = tokenizer.vocab_size
+
+    from profiling.profiler import BenchmarkSuite
+
+    suite = BenchmarkSuite(cfg, cfg.device)
+    results = suite.run_all()
+
+
+def cmd_generate(args):
+    cfg = GPTConfig()
+    cfg.device = get_device(args.device)
+
+    tokenizer = Tokenizer()
+    cfg.vocab_size = tokenizer.vocab_size
+
+    model = GPTModel(cfg).to(cfg.device)
+
+    if args.checkpoint:
+        checkpoint = torch.load(args.checkpoint, map_location=cfg.device)
+        model.load_state_dict(checkpoint["model_state_dict"])
+        print(f"Loaded checkpoint from {args.checkpoint}")
+    else:
+        print("No checkpoint provided, using random weights (output will be gibberish)")
+
+    model.eval()
+    input_ids = tokenizer.encode(args.prompt)
+    input_ids = torch.tensor([input_ids], dtype=torch.long, device=cfg.device)
+
+    output_ids = generate(
+        model,
+        input_ids,
+        max_new_tokens=args.max_tokens,
+        max_len=cfg.max_len,
+        temperature=args.temperature,
+        top_k=args.top_k,
+        top_p=args.top_p,
+    )
+
+    text = tokenizer.decode(output_ids[0].tolist())
+    print(f"\nGenerated text:\n{'-' * 40}")
+    print(text)
+    print(f"{'-' * 40}")
+
+
+def cmd_kernels(args):
+    print(f"\n{'=' * 60}")
+    print("Registered Kernel Backends")
+    print(f"{'=' * 60}")
+    print(f"\n  Normalization: {list(NORM_REGISTRY.keys())}")
+    for name, cls in NORM_REGISTRY.items():
+        print(f"    {name:10s} -> {cls.__name__}")
+
+    print(f"\n  Feed-Forward:   {list(FFN_REGISTRY.keys())}")
+    for name, cls in FFN_REGISTRY.items():
+        print(f"    {name:10s} -> {cls.__name__}")
+
+    print(f"\n  Attention:      {list(ATTN_REGISTRY.keys())}")
+    for name, cls in ATTN_REGISTRY.items():
+        print(f"    {name:10s} -> {cls.__name__}")
+
+    print(f"\n  KernelBackend enum: {list(KernelBackend)}")
+    print(f"{'=' * 60}\n")
+
+
+def main():
+    parser = argparse.ArgumentParser(description="{{.Name}} - Custom Kernel LLMs")
+    subparsers = parser.add_subparsers(dest="command", help="Available commands")
+
+    # Common arguments
+    def add_common_args(p):
+        p.add_argument(
+            "--kernel",
+            default="{{.KernelBackend}}",
+            choices=["torch", "triton", "cuda"],
+            help="Kernel backend to use",
+        )
+        p.add_argument("--device", default=None, help="Device: cpu, mps, cuda")
+        p.add_argument(
+            "--config",
+            default="{{.ModelConfig}}",
+            choices=["debug", "small"],
+            help="Model config size",
+        )
+
+    # Train
+    train_parser = subparsers.add_parser("train", help="Train the model")
+    add_common_args(train_parser)
+    train_parser.add_argument("--epochs", type=int, default={{.Epochs}})
+    train_parser.add_argument(
+        "--compile", action="store_true", help="Use torch.compile()"
+    )
+    train_parser.add_argument("--flash", action="store_true", help="Use FlashAttention")
+
+    # Profile
+    profile_parser = subparsers.add_parser("profile", help="Profile the model")
+    add_common_args(profile_parser)
+    profile_parser.add_argument("--output-dir", default="./prof_logs")
+    profile_parser.add_argument("--num-steps", type=int, default=10)
+
+    # Benchmark
+    bench_parser = subparsers.add_parser("benchmark", help="Benchmark kernel backends")
+    add_common_args(bench_parser)
+
+    # Generate
+    gen_parser = subparsers.add_parser("generate", help="Generate text")
+    gen_parser.add_argument("--device", default=None)
+    gen_parser.add_argument("--prompt", default="Once upon a time")
+    gen_parser.add_argument("--max-tokens", type=int, default=100)
+    gen_parser.add_argument("--temperature", type=float, default=0.8)
+    gen_parser.add_argument("--top-k", type=int, default=None)
+    gen_parser.add_argument("--top-p", type=float, default=None)
+    gen_parser.add_argument("--checkpoint", default=None)
+
+    # Kernels
+    subparsers.add_parser("kernels", help="List registered kernel backends")
+
+    args = parser.parse_args()
+
+    if args.command == "train":
+        cmd_train(args)
+    elif args.command == "profile":
+        cmd_profile(args)
+    elif args.command == "benchmark":
+        cmd_benchmark(args)
+    elif args.command == "generate":
+        cmd_generate(args)
+    elif args.command == "kernels":
+        cmd_kernels(args)
+    else:
+        parser.print_help()
+
+
+if __name__ == "__main__":
+    main()

@@ -1,3 +1,0 @@
-name: cuda
-description: CUDA kernel scaffold
-apply_hint: Build and run with `make run`

@@ -1,0 +1,52 @@
+# {{.Name}}
+
+Custom kernel LLM tester — swap CUDA/Triton/FlashAttention backends and benchmark.
+
+Switch backends: `--kernel torch` / `--kernel triton` / `--kernel cuda` / `--flash`
+
+## Quick Start
+
+```bash
+make setup
+make train-debug
+```
+
+## Make Targets
+
+```bash
+# Training
+make train              # Default backend ({{.KernelBackend}})
+make train-debug        # Small model, quick test
+make train-compiled     # torch.compile
+make train-triton       # Triton kernels (GPU)
+make train-cuda         # CUDA kernels (GPU, run make build-cuda first)
+make train-flash        # FlashAttention (GPU)
+
+# Profiling
+make profile            # PyTorch Profiler
+make nsys               # Nsight Systems
+make ncu                # Nsight Compute
+make perf-stat          # perf hardware counters
+make perf-record        # perf CPU sampling
+make perf-flame         # flame graph
+make tensorboard        # view logs
+
+# Benchmarking
+make benchmark
+
+# Other
+make generate
+make kernels            # list registered backends
+make build-cuda         # compile CUDA kernels
+make clean
+```
+
+## Structure
+
+```
+kernels/          Registry + Factory pattern, Triton + CUDA kernels
+profiling/        PyTorch Profiler, Nsight, perf, benchmarks
+src/              GPT model, training, generation
+config.py         GPTConfig
+main.py           CLI entry point
+```

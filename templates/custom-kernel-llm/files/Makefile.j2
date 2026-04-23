@@ -1,0 +1,110 @@
+.PHONY: train train-compiled train-triton train-cuda train-flash profile benchmark generate kernels setup build-cuda clean
+
+# Setup
+setup:
+	pip install -r requirements.txt
+
+build-cuda:
+	cd kernels/cuda && python setup.py install
+
+# Training
+train:
+	python main.py train --kernel {{.KernelBackend}}
+
+train-debug:
+	python main.py train --kernel {{.KernelBackend}} --config debug
+
+train-compiled:
+	python main.py train --kernel torch --compile
+
+train-compiled-debug:
+	python main.py train --kernel torch --compile --config debug
+
+train-triton:
+	python main.py train --kernel triton
+
+train-triton-debug:
+	python main.py train --kernel triton --config debug
+
+train-cuda:
+	python main.py train --kernel cuda
+
+train-cuda-debug:
+	python main.py train --kernel cuda --config debug
+
+train-flash:
+	python main.py train --kernel torch --flash
+
+train-flash-debug:
+	python main.py train --kernel torch --flash --config debug
+
+# Profiling
+profile:
+	python main.py profile --kernel {{.KernelBackend}}
+
+profile-compiled:
+	python main.py profile --kernel torch --compile
+
+profile-triton:
+	python main.py profile --kernel triton
+
+profile-cuda:
+	python main.py profile --kernel cuda
+
+profile-debug:
+	python main.py profile --kernel {{.KernelBackend}} --config debug
+
+nsys:
+	nsys profile -o nsys_reports/trace --trace=cuda,nvtx,osrt --cuda-graph-trace=node --stats=true python main.py train --kernel {{.KernelBackend}} --config debug
+
+nsys-compiled:
+	nsys profile -o nsys_reports/trace_compiled --trace=cuda,nvtx,osrt --cuda-graph-trace=node --stats=true python main.py train --kernel torch --compile --config debug
+
+nsys-triton:
+	nsys profile -o nsys_reports/trace_triton --trace=cuda,nvtx,osrt --cuda-graph-trace=node --stats=true python main.py train --kernel triton --config debug
+
+ncu:
+	ncu --set full --kernel-name "volta_sgemm" --launch-skip 5 --launch-count 3 python main.py train --kernel {{.KernelBackend}} --config debug
+
+ncu-layernorm:
+	ncu --set full --kernel-name "layernorm" --launch-skip 5 --launch-count 3 python main.py train --kernel {{.KernelBackend}} --config debug
+
+perf-record:
+	perf record -g -o perf.data python main.py train --kernel {{.KernelBackend}} --config debug
+
+perf-stat:
+	perf stat -e cache-misses,cache-references,instructions,cycles python main.py train --kernel {{.KernelBackend}} --config debug
+
+perf-report:
+	perf report -i perf.data
+
+perf-flame:
+	perf script -i perf.data | stackcollapse-perf.pl | flamegraph.pl > flame.svg
+
+# Benchmarking
+benchmark:
+	python main.py benchmark
+
+benchmark-debug:
+	python main.py benchmark --config debug
+
+# Generation
+generate:
+	python main.py generate --prompt "Once upon a time"
+
+generate-checkpoint:
+	python main.py generate --checkpoint checkpoints/best_model.pt --prompt "Once upon a time"
+
+# Info
+kernels:
+	python main.py kernels
+
+# TensorBoard
+tensorboard:
+	tensorboard --logdir ./prof_logs
+
+# Clean
+clean:
+	rm -rf prof_logs/ nsys_reports/ perf.data flame.svg trace.json
+	find . -type d -name __pycache__ -exec rm -rf {} +
+	find . -type f -name "*.pyc" -delete

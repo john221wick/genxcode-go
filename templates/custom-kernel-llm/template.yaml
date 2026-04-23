@@ -1,0 +1,9 @@
+name: custom-kernel-llm
+description: Custom kernel LLM tester (CUDA, Triton, FlashAttention)
+aliases:
+  - kernel-llm
+  - cuda-llm
+  - custom-kernel
+apply_hint: |
+  Run `make setup && make train-debug` to test.
+  Switch backends: --kernel torch / --kernel triton / --kernel cuda / --flash
