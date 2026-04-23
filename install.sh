@@ -41,12 +41,39 @@ fi
 echo "Installing $BINARY $TAG for ${OS}_${ARCH}..."
 
 # Download binary
-URL="https://github.com/$REPO/releases/download/$TAG/${BINARY}_${TAG}_${OS}_${ARCH}.tar.gz"
+FILENAME="${BINARY}_${TAG}_${OS}_${ARCH}.tar.gz"
+URL="https://github.com/$REPO/releases/download/$TAG/$FILENAME"
 TMPDIR=$(mktemp -d)
 trap 'rm -rf "$TMPDIR"' EXIT
 
-echo "Downloading from $URL..."
-curl -fsSL "$URL" -o "$TMPDIR/${BINARY}.tar.gz"
+echo "Downloading $FILENAME..."
+HTTP_CODE=$(curl -sSL -w "%{http_code}" "$URL" -o "$TMPDIR/${BINARY}.tar.gz")
+
+if [ "$HTTP_CODE" != "200" ]; then
+    echo ""
+    echo "Error: Download failed with HTTP $HTTP_CODE"
+    echo "URL: $URL"
+    echo ""
+    echo "This usually means the release asset does not exist."
+    echo "Available assets for $TAG:"
+    curl -s "$API_URL" | grep '"name":' | sed -E 's/.*"name": "([^"]+)".*/  - \1/' || true
+    echo ""
+    echo "Make sure you have published a release with 'make publish'"
+    exit 1
+fi
+
+# Verify it's actually a tar.gz before extracting
+FILETYPE=$(file -b "$TMPDIR/${BINARY}.tar.gz" 2>/dev/null || echo "unknown")
+case "$FILETYPE" in
+    *gzip*) ;;  # OK
+    *)
+        echo ""
+        echo "Error: Downloaded file is not a valid archive (got: $FILETYPE)"
+        echo "The release asset might be missing or corrupted."
+        exit 1
+        ;;
+esac
+
 tar -xzf "$TMPDIR/${BINARY}.tar.gz" -C "$TMPDIR"
 
 # Install
