@@ -188,6 +188,22 @@ var listCmd = &cobra.Command{
 	},
 }
 
+var removeCmd = &cobra.Command{
+	Use:   "remove",
+	Short: "Remove genxcode.yaml from current directory",
+	RunE: func(cmd *cobra.Command, args []string) error {
+		path := config.DefaultConfigFilename
+		if _, err := os.Stat(path); os.IsNotExist(err) {
+			return fmt.Errorf("%s does not exist", path)
+		}
+		if err := os.Remove(path); err != nil {
+			return fmt.Errorf("failed to remove %s: %w", path, err)
+		}
+		fmt.Printf("Removed %s\n", path)
+		return nil
+	},
+}
+
 func init() {
 	rootCmd.PersistentFlags().StringVar(&repoOwner, "owner", "", "GitHub owner for remote templates")
 	rootCmd.PersistentFlags().StringVar(&repoName, "repo", "", "GitHub repo for remote templates")
@@ -199,6 +215,7 @@ func init() {
 	rootCmd.AddCommand(applyCmd)
 	rootCmd.AddCommand(updateCmd)
 	rootCmd.AddCommand(listCmd)
+	rootCmd.AddCommand(removeCmd)
 }
 
 // Execute runs the root command.
