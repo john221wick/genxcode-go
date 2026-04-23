@@ -12,6 +12,7 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/john221wick/genxcode-go/pkg/config"
 	"github.com/john221wick/genxcode-go/pkg/generator"
@@ -21,18 +22,85 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-const logo = `
-   ██████╗ ███████╗███╗   ██╗██╗  ██╗ ██████╗ ██████╗ ██████╗ ███████╗
-  ██╔════╝ ██╔════╝████╗  ██║╚██╗██╔╝██╔════╝██╔═══██╗██╔══██╗██╔════╝
-  ██║  ███╗█████╗  ██╔██╗ ██║ ╚███╔╝ ██║     ██║   ██║██║  ██║█████╗
-  ██║   ██║██╔══╝  ██║╚██╗██║ ██╔██╗ ██║     ██║   ██║██║  ██║██╔══╝
-  ╚██████╔╝███████╗██║ ╚████║██╔╝ ██╗╚██████╗╚██████╔╝██████╔╝███████╗
-   ╚═════╝ ╚══════╝╚═╝  ╚═══╝╚═╝  ╚═╝ ╚═════╝ ╚═════╝ ╚═════╝ ╚══════╝
-                    Boilerplate Code Generator
-`
-
 func printLogo() {
-	fmt.Print(logo)
+	fmt.Print("\033[2J\033[H") // clear screen + move cursor to top
+	bold := "\033[1m"
+	reset := "\033[0m"
+	dim := "\033[2m"
+	hide := "\033[?25l" // hide cursor
+	show := "\033[?25h" // show cursor
+
+	// RGB gradient colors (top=electric blue → middle=purple → bottom=hot pink)
+	gradient := []string{
+		"\033[38;2;0;210;255m",   // electric cyan
+		"\033[38;2;80;160;255m",  // sky blue
+		"\033[38;2;140;100;255m", // purple
+		"\033[38;2;200;60;255m",  // magenta
+		"\033[38;2;255;40;200m",  // hot pink
+		"\033[38;2;255;80;150m",  // rose
+	}
+
+	lines := []string{
+		"   ██████╗ ███████╗███╗   ██╗██╗  ██╗ ██████╗ ██████╗ ██████╗ ███████╗",
+		"  ██╔════╝ ██╔════╝████╗  ██║╚██╗██╔╝██╔════╝██╔═══██╗██╔══██╗██╔════╝",
+		"  ██║  ███╗█████╗  ██╔██╗ ██║ ╚███╔╝ ██║     ██║   ██║██║  ██║█████╗  ",
+		"  ██║   ██║██╔══╝  ██║╚██╗██║ ██╔██╗ ██║     ██║   ██║██║  ██║██╔══╝  ",
+		"  ╚██████╔╝███████╗██║ ╚████║██╔╝ ██╗╚██████╗╚██████╔╝██████╔╝███████╗",
+		"   ╚═════╝ ╚══════╝╚═╝  ╚═══╝╚═╝  ╚═╝ ╚═════╝ ╚═════╝ ╚═════╝ ╚══════╝",
+	}
+
+	subtitle := "⚡ Boilerplate Code Generator ⚡"
+
+	fmt.Print(hide)
+	fmt.Println()
+
+	// Phase 1: Sweep in each line left-to-right
+	for i, line := range lines {
+		runes := []rune(line)
+		for j := 0; j < len(runes); j += 3 {
+			end := j + 3
+			if end > len(runes) {
+				end = len(runes)
+			}
+			fmt.Printf("\r%s%s%s%s", bold, gradient[i], string(runes[:end]), reset)
+			time.Sleep(2 * time.Millisecond)
+		}
+		fmt.Println()
+	}
+
+	// Phase 2: Shimmer effect — sweep highlight across logo
+	time.Sleep(80 * time.Millisecond)
+	white := "\033[38;2;255;255;255m"
+	for col := 0; col < 75; col += 2 {
+		fmt.Printf("\033[%dA", len(lines)) // move cursor up
+		for i, line := range lines {
+			runes := []rune(line)
+			var buf strings.Builder
+			for j, r := range runes {
+				if j >= col && j < col+6 {
+					buf.WriteString(bold + white)
+				} else {
+					buf.WriteString(bold + gradient[i])
+				}
+				buf.WriteRune(r)
+			}
+			buf.WriteString(reset)
+			fmt.Printf("\r%s\n", buf.String())
+		}
+		time.Sleep(8 * time.Millisecond)
+	}
+
+	// Phase 3: Type out subtitle
+	fmt.Println()
+	padding := "                    "
+	fmt.Print(padding)
+	for _, r := range subtitle {
+		fmt.Printf("%s%s%c%s", bold, dim, r, reset)
+		time.Sleep(20 * time.Millisecond)
+	}
+	fmt.Println()
+	fmt.Println()
+	fmt.Print(show)
 }
 
 var (
