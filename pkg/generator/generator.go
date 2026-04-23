@@ -4,107 +4,143 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
-	"text/template"
 	"os"
 	"path/filepath"
 	"strings"
+	"text/template"
 )
 
-// Context holds all data passed to templates.
-type Context struct {
-	Name      string
-	Template  string
-	Arch      string
-	InputDim  int
-	OutputDim int
-	Hidden    []int
-	Activation string
-	Metrics   []string
-	Prod      bool
-	LR        float64
-	Epochs    int
-	BatchSize int
-	Device    string
-	Data      map[string]interface{} // raw data for any extra fields
-
-	// Computed fields
-	HasF1        bool
-	HasPrecision bool
-	HasRecall    bool
-	HasAccuracy  bool
-	HasLoss       bool
-	NeedsSklearn  bool
-	SklearnImports string
-	Layers        []Layer
-	OutputLayerIn int
-}
-
-// Layer represents a single MLP layer for models.py.
-type Layer struct {
-	In  int
-	Out int
-}
-
-// BuildContext creates a fully populated template context from raw config data.
-func BuildContext(data map[string]interface{}) (*Context, error) {
-	ctx := &Context{
-		Data: data,
+// BuildContext takes raw config data and returns an enriched map with
+// computed fields added. Works for any template — all fields from the
+// YAML config are accessible directly (e.g. {{.KernelName}}, {{.Name}}).
+func BuildContext(data map[string]interface{}) (map[string]interface{}, error) {
+	ctx := make(map[string]interface{})
+	for k, v := range data {
+		ctx[k] = v
 	}
 
-	// Extract fields with defaults
-	ctx.Name = getString(data, "name", "project")
-	ctx.Template = getString(data, "template", "pytorch")
-	ctx.Arch = getString(data, "arch", "mlp")
-	ctx.InputDim = getInt(data, "input_dim", 784)
-	ctx.OutputDim = getInt(data, "output_dim", 10)
-	ctx.Hidden = getIntSlice(data, "hidden", []int{256, 128})
-	ctx.Activation = getString(data, "activation", "relu")
-	ctx.Metrics = getStringSlice(data, "metrics", []string{"accuracy", "loss"})
-	ctx.Prod = getBool(data, "prod", false)
-	ctx.LR = getFloat(data, "lr", 0.001)
-	ctx.Epochs = getInt(data, "epochs", 10)
-	ctx.BatchSize = getInt(data, "batch_size", 32)
-	ctx.Device = getString(data, "device", "cpu")
+	// Ensure basic fields
+	if _, ok := ctx["Name"]; !ok {
+		ctx["Name"] = getString(data, "name", "project")
+	}
+	if _, ok := ctx["Template"]; !ok {
+		ctx["Template"] = getString(data, "template", "")
+	}
 
-	// Compute booleans
-	for _, m := range ctx.Metrics {
-		switch m {
-		case "f1":
-			ctx.HasF1 = true
-		case "precision":
-			ctx.HasPrecision = true
-		case "recall":
-			ctx.HasRecall = true
-		case "accuracy":
-			ctx.HasAccuracy = true
-		case "loss":
-			ctx.HasLoss = true
+	// Capitalize common fields so templates can use either .name or .Name
+	ctx["Name"] = getString(data, "name", "project")
+	ctx["Template"] = getString(data, "template", "")
+
+	// Compute pytorch-specific fields if relevant
+	arch := getString(data, "arch", "")
+	if arch != "" {
+		ctx["Arch"] = arch
+	}
+
+	inputDim := getInt(data, "input_dim", 0)
+	outputDim := getInt(data, "output_dim", 0)
+	hidden := getIntSlice(data, "hidden", nil)
+	activation := getString(data, "activation", "relu")
+	metrics := getStringSlice(data, "metrics", nil)
+
+	if inputDim > 0 {
+		ctx["InputDim"] = inputDim
+	}
+	if outputDim > 0 {
+		ctx["OutputDim"] = outputDim
+	}
+	if hidden != nil {
+		ctx["Hidden"] = hidden
+	}
+	if activation != "" {
+		ctx["Activation"] = activation
+	}
+	if metrics != nil {
+		ctx["Metrics"] = metrics
+	}
+
+	ctx["Prod"] = getBool(data, "prod", false)
+	if lr := getFloat(data, "lr", 0); lr > 0 {
+		ctx["LR"] = lr
+	}
+	if epochs := getInt(data, "epochs", 0); epochs > 0 {
+		ctx["Epochs"] = epochs
+	}
+	if bs := getInt(data, "batch_size", 0); bs > 0 {
+		ctx["BatchSize"] = bs
+	}
+	if device := getString(data, "device", ""); device != "" {
+		ctx["Device"] = device
+	}
+
+	// Capitalize all snake_case keys to PascalCase for template access
+	// e.g. kernel_name -> KernelName, vector_size -> VectorSize
+	for k, v := range data {
+		pascal := snakeToPascal(k)
+		if pascal != k {
+			ctx[pascal] = v
 		}
 	}
-	ctx.NeedsSklearn = ctx.HasF1 || ctx.HasPrecision || ctx.HasRecall
 
-	// Build sklearn import line
+	// Compute metric booleans
+	for _, m := range metrics {
+		switch m {
+		case "f1":
+			ctx["HasF1"] = true
+		case "precision":
+			ctx["HasPrecision"] = true
+		case "recall":
+			ctx["HasRecall"] = true
+		case "accuracy":
+			ctx["HasAccuracy"] = true
+		case "loss":
+			ctx["HasLoss"] = true
+		}
+	}
+
+	needsSklearn := getBool(ctx, "HasF1", false) || getBool(ctx, "HasPrecision", false) || getBool(ctx, "HasRecall", false)
+	ctx["NeedsSklearn"] = needsSklearn
+
 	var sklearnFuncs []string
-	if ctx.HasF1 {
+	if getBool(ctx, "HasF1", false) {
 		sklearnFuncs = append(sklearnFuncs, "f1_score")
 	}
-	if ctx.HasPrecision {
+	if getBool(ctx, "HasPrecision", false) {
 		sklearnFuncs = append(sklearnFuncs, "precision_score")
 	}
-	if ctx.HasRecall {
+	if getBool(ctx, "HasRecall", false) {
 		sklearnFuncs = append(sklearnFuncs, "recall_score")
 	}
-	ctx.SklearnImports = strings.Join(sklearnFuncs, ", ")
+	ctx["SklearnImports"] = strings.Join(sklearnFuncs, ", ")
 
-	// Build layers for models.py
-	prev := ctx.InputDim
-	for _, h := range ctx.Hidden {
-		ctx.Layers = append(ctx.Layers, Layer{In: prev, Out: h})
-		prev = h
+	// Build layers for MLP models
+	if inputDim > 0 && hidden != nil {
+		type Layer struct {
+			In  int
+			Out int
+		}
+		prev := inputDim
+		var layers []Layer
+		for _, h := range hidden {
+			layers = append(layers, Layer{In: prev, Out: h})
+			prev = h
+		}
+		ctx["Layers"] = layers
+		ctx["OutputLayerIn"] = prev
 	}
-	ctx.OutputLayerIn = prev
 
 	return ctx, nil
+}
+
+// snakeToPascal converts snake_case to PascalCase.
+func snakeToPascal(s string) string {
+	parts := strings.Split(s, "_")
+	for i, p := range parts {
+		if len(p) > 0 {
+			parts[i] = strings.ToUpper(p[:1]) + p[1:]
+		}
+	}
+	return strings.Join(parts, "")
 }
 
 // TemplateFuncs returns custom functions available in templates.
@@ -137,8 +173,8 @@ func contains(slice []string, item string) bool {
 	return false
 }
 
-// Render renders a single template string with the context.
-func Render(tmplStr string, ctx *Context) (string, error) {
+// Render renders a single template string with the context map.
+func Render(tmplStr string, ctx map[string]interface{}) (string, error) {
 	tmpl, err := template.New("fragment").Funcs(TemplateFuncs()).Parse(tmplStr)
 	if err != nil {
 		return "", fmt.Errorf("parse template: %w", err)
@@ -151,7 +187,7 @@ func Render(tmplStr string, ctx *Context) (string, error) {
 }
 
 // GenerateProject walks template files and renders them to output directory.
-func GenerateProject(templateDir, outputDir string, ctx *Context) error {
+func GenerateProject(templateDir, outputDir string, ctx map[string]interface{}) error {
 	filesDir := filepath.Join(templateDir, "files")
 	return filepath.Walk(filesDir, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
@@ -166,11 +202,10 @@ func GenerateProject(templateDir, outputDir string, ctx *Context) error {
 			return err
 		}
 
-		// Render the relative path itself (for filenames like {{.Name}}Dataset.py)
 		isTemplate := strings.HasSuffix(rel, ".j2") || strings.HasSuffix(rel, ".tmpl")
 		targetRel := rel
 		if isTemplate {
-			targetRel = targetRel[:len(targetRel)-3] // strip .j2 or .tmpl
+			targetRel = targetRel[:len(targetRel)-3]
 		}
 
 		renderedRel, err := Render(targetRel, ctx)
