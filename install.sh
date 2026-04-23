@@ -40,8 +40,9 @@ fi
 
 echo "Installing $BINARY $TAG for ${OS}_${ARCH}..."
 
-# Download binary
-FILENAME="${BINARY}_${TAG}_${OS}_${ARCH}.tar.gz"
+# Download binary (GoReleaser strips 'v' from version in filenames)
+VERSION_NO_V=$(echo "$TAG" | sed 's/^v//')
+FILENAME="${BINARY}_${VERSION_NO_V}_${OS}_${ARCH}.tar.gz"
 URL="https://github.com/$REPO/releases/download/$TAG/$FILENAME"
 TMPDIR=$(mktemp -d)
 trap 'rm -rf "$TMPDIR"' EXIT
@@ -57,8 +58,6 @@ if [ "$HTTP_CODE" != "200" ]; then
     echo "This usually means the release asset does not exist."
     echo "Available assets for $TAG:"
     curl -s "$API_URL" | grep '"name":' | sed -E 's/.*"name": "([^"]+)".*/  - \1/' || true
-    echo ""
-    echo "Make sure you have published a release with 'make publish'"
     exit 1
 fi
 
