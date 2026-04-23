@@ -1,0 +1,3 @@
+name: pytorch
+description: PyTorch training scaffold
+apply_hint: Install deps, then run `python main.py`

@@ -1,0 +1,18 @@
+from pathlib import Path
+
+import torch
+
+from .models import {{.Name}}
+from .config import CONFIG
+
+device = torch.device(CONFIG["device"])
+model = {{.Name}}().to(device)
+checkpoint = Path("model.pt")
+if checkpoint.exists():
+    model.load_state_dict(torch.load(checkpoint, map_location=device))
+model.eval()
+
+
+def predict(x):
+    with torch.no_grad():
+        return model(x.to(device))

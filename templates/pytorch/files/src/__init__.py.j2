@@ -1,0 +1,7 @@
+from .models import {{.Name}}
+from .config import CONFIG
+from .data import {{.Name}}Dataset, get_loaders
+from .train import train
+from .predict import predict
+
+__all__ = ["{{.Name}}", "CONFIG", "{{.Name}}Dataset", "get_loaders", "train", "predict"]

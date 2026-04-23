@@ -1,0 +1,5 @@
+torch>=2.1
+{{if .Prod}}mlflow>=3.7
+{{else}}tensorboard>=2.18
+{{end}}{{if .NeedsSklearn}}scikit-learn>=1.4
+{{end}}

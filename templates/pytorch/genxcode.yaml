@@ -1,0 +1,17 @@
+template: pytorch
+name: pytorch
+arch: mlp
+input_dim: 784
+output_dim: 10
+hidden:
+  - 256
+  - 128
+activation: relu
+metrics:
+  - accuracy
+  - loss
+prod: false
+lr: 0.001
+epochs: 10
+batch_size: 32
+device: cpu

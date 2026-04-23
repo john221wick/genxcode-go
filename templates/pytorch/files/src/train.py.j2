@@ -1,0 +1,140 @@
+import sys
+
+import torch
+import torch.nn as nn
+{{- if .Prod}}
+import mlflow
+{{- else}}
+from torch.utils.tensorboard import SummaryWriter
+{{- end}}
+{{- if .NeedsSklearn}}
+from sklearn.metrics import {{.SklearnImports}}
+{{- end}}
+from .models import {{.Name}}
+from .config import CONFIG
+
+
+device = torch.device(CONFIG["device"])
+if sys.version_info >= (3, 14):
+    model = {{.Name}}().to(device)
+else:
+    model = torch.compile({{.Name}}().to(device))
+optimizer = torch.optim.Adam(model.parameters(), lr=CONFIG["lr"])
+criterion = nn.CrossEntropyLoss()
+{{- if not .Prod}}
+writer = SummaryWriter("runs/" + CONFIG["model_name"])
+{{- end}}
+
+
+def _train_epoch(train_loader):
+    model.train()
+    train_loss = 0.0
+    for data, target in train_loader:
+        data, target = data.to(device), target.to(device)
+        optimizer.zero_grad()
+        loss = criterion(model(data), target)
+        loss.backward()
+        optimizer.step()
+        train_loss += loss.item()
+    return train_loss / len(train_loader)
+
+
+def _val_epoch(val_loader):
+    model.eval()
+    val_loss = 0.0
+    correct = 0
+    total = 0
+{{- if .NeedsSklearn}}
+    all_preds = []
+    all_targets = []
+{{- end}}
+    with torch.no_grad():
+        for data, target in val_loader:
+            data, target = data.to(device), target.to(device)
+            output = model(data)
+            val_loss += criterion(output, target).item()
+            _, predicted = output.max(1)
+            total += target.size(0)
+            correct += predicted.eq(target).sum().item()
+{{- if .NeedsSklearn}}
+            all_preds.extend(predicted.cpu().tolist())
+            all_targets.extend(target.cpu().tolist())
+{{- end}}
+    val_loss /= len(val_loader)
+    accuracy = 100.0 * correct / total
+{{- if .NeedsSklearn}}
+    return val_loss, accuracy, all_preds, all_targets
+{{- else}}
+    return val_loss, accuracy
+{{- end}}
+
+
+def train(train_loader, val_loader=None):
+    if val_loader is None:
+        val_loader = train_loader
+{{- if .Prod}}
+    mlflow.set_experiment(CONFIG["model_name"])
+    with mlflow.start_run():
+        mlflow.log_params(CONFIG)
+        for epoch in range(CONFIG["epochs"]):
+            train_loss = _train_epoch(train_loader)
+            mlflow.log_metric("train_loss", train_loss, step=epoch)
+{{- if .Metrics}}
+            val_loss, accuracy{{- if .NeedsSklearn}}, all_preds, all_targets{{- end}} = _val_epoch(val_loader)
+            mlflow.log_metric("val_loss", val_loss, step=epoch)
+            mlflow.log_metric("val_accuracy", accuracy, step=epoch)
+{{- if .HasF1}}
+            f1 = f1_score(all_targets, all_preds, average="weighted")
+            mlflow.log_metric("val_f1", f1, step=epoch)
+{{- end}}
+{{- if .HasPrecision}}
+            prec = precision_score(all_targets, all_preds, average="weighted")
+            mlflow.log_metric("val_precision", prec, step=epoch)
+{{- end}}
+{{- if .HasRecall}}
+            rec = recall_score(all_targets, all_preds, average="weighted")
+            mlflow.log_metric("val_recall", rec, step=epoch)
+{{- end}}
+            print(
+                f"Epoch {epoch+1}/{CONFIG['epochs']} | Train Loss: {train_loss:.4f} | "
+                f"Val Loss: {val_loss:.4f} | Acc: {accuracy:.2f}%"
+            )
+{{- else}}
+            print(
+                f"Epoch {epoch+1}/{CONFIG['epochs']} | Train Loss: {train_loss:.4f}"
+            )
+{{- end}}
+        torch.save(model.state_dict(), "model.pt")
+        mlflow.log_artifact("model.pt")
+{{- else}}
+    for epoch in range(CONFIG["epochs"]):
+        train_loss = _train_epoch(train_loader)
+        writer.add_scalar("Loss/train", train_loss, epoch)
+{{- if .Metrics}}
+        val_loss, accuracy{{- if .NeedsSklearn}}, all_preds, all_targets{{- end}} = _val_epoch(val_loader)
+        writer.add_scalar("Loss/val", val_loss, epoch)
+        writer.add_scalar("Accuracy/val", accuracy, epoch)
+{{- if .HasF1}}
+        f1 = f1_score(all_targets, all_preds, average="weighted")
+        writer.add_scalar("F1/val", f1, epoch)
+{{- end}}
+{{- if .HasPrecision}}
+        prec = precision_score(all_targets, all_preds, average="weighted")
+        writer.add_scalar("Precision/val", prec, epoch)
+{{- end}}
+{{- if .HasRecall}}
+        rec = recall_score(all_targets, all_preds, average="weighted")
+        writer.add_scalar("Recall/val", rec, epoch)
+{{- end}}
+        print(
+            f"Epoch {epoch+1}/{CONFIG['epochs']} | Train Loss: {train_loss:.4f} | "
+            f"Val Loss: {val_loss:.4f} | Acc: {accuracy:.2f}%"
+        )
+{{- else}}
+        print(
+            f"Epoch {epoch+1}/{CONFIG['epochs']} | Train Loss: {train_loss:.4f}"
+        )
+{{- end}}
+    writer.close()
+    torch.save(model.state_dict(), "model.pt")
+{{- end}}

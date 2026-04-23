@@ -1,0 +1,10 @@
+CONFIG = {
+    "model_name": "{{ .Name }}",
+    "input_dim": {{ .InputDim }},
+    "hidden": {{ json .Hidden }},
+    "output_dim": {{ .OutputDim }},
+    "lr": {{ .LR }},
+    "epochs": {{ .Epochs }},
+    "batch_size": {{ .BatchSize }},
+    "device": "{{ .Device }}",
+}

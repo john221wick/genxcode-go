@@ -1,0 +1,21 @@
+import torch
+
+from src.config import CONFIG
+from src.data import get_loaders
+from src.predict import predict
+from src.train import train
+
+
+def main():
+    X = torch.randn(512, CONFIG["input_dim"])
+    y = torch.randint(0, CONFIG["output_dim"], (512,))
+    train_loader, val_loader = get_loaders(X, y)
+    train(train_loader, val_loader)
+
+    sample = torch.randn(4, CONFIG["input_dim"])
+    outputs = predict(sample)
+    print("Sample outputs:", outputs)
+
+
+if __name__ == "__main__":
+    main()

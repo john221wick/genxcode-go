@@ -1,0 +1,23 @@
+import torch.nn as nn
+
+
+class {{.Name}}(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.net = nn.Sequential({{range .Layers}}
+            nn.Linear({{.In}}, {{.Out}}),
+{{- if eq $.Activation "tanh"}}
+            nn.Tanh(),
+{{- else if eq $.Activation "sigmoid"}}
+            nn.Sigmoid(),
+{{- else if eq $.Activation "leaky_relu"}}
+            nn.LeakyReLU(),
+{{- else}}
+            nn.ReLU(),
+{{- end -}}
+{{end}}
+            nn.Linear({{.OutputLayerIn}}, {{.OutputDim}}),
+        )
+
+    def forward(self, x):
+        return self.net(x)
