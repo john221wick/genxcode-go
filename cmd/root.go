@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"bufio"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -9,13 +10,30 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 
 	"github.com/john221wick/genxcode-go/pkg/config"
 	"github.com/john221wick/genxcode-go/pkg/generator"
 	"github.com/john221wick/genxcode-go/pkg/template"
+	"github.com/manifoldco/promptui"
 	"github.com/spf13/cobra"
+	"gopkg.in/yaml.v3"
 )
+
+const logo = `
+   ██████╗ ███████╗███╗   ██╗██╗  ██╗ ██████╗ ██████╗ ██████╗ ███████╗
+  ██╔════╝ ██╔════╝████╗  ██║╚██╗██╔╝██╔════╝██╔═══██╗██╔══██╗██╔════╝
+  ██║  ███╗█████╗  ██╔██╗ ██║ ╚███╔╝ ██║     ██║   ██║██║  ██║█████╗
+  ██║   ██║██╔══╝  ██║╚██╗██║ ██╔██╗ ██║     ██║   ██║██║  ██║██╔══╝
+  ╚██████╔╝███████╗██║ ╚████║██╔╝ ██╗╚██████╗╚██████╔╝██████╔╝███████╗
+   ╚═════╝ ╚══════╝╚═╝  ╚═══╝╚═╝  ╚═╝ ╚═════╝ ╚═════╝ ╚═════╝ ╚══════╝
+                    Boilerplate Code Generator
+`
+
+func printLogo() {
+	fmt.Print(logo)
+}
 
 var (
 	forceFlag bool
@@ -44,33 +62,306 @@ var rootCmd = &cobra.Command{
 
 var initCmd = &cobra.Command{
 	Use:   "init <template>",
-	Short: "Create a genxcode.yaml for a template",
+	Short: "Initialize a project from a template",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		mgr := newManager()
+		printLogo()
 		templateName := strings.TrimSpace(args[0])
+		return runWizard(templateName)
+	},
+}
 
-		if err := mgr.EnsureAvailable(templateName); err != nil {
-			return fmt.Errorf("failed to fetch template: %w", err)
+// setupMode represents how the user wants to set up the project.
+type setupMode struct {
+	Name        string
+	Description string
+}
+
+func runWizard(templateName string) error {
+	mgr := newManager()
+
+	if err := mgr.EnsureAvailable(templateName); err != nil {
+		return fmt.Errorf("failed to fetch template: %w", err)
+	}
+
+	tmplDir := mgr.TemplateDir(templateName)
+	spec, err := config.LoadTemplateSpec(filepath.Join(tmplDir, "template.yaml"))
+	if err != nil {
+		return err
+	}
+
+	// Load default config as ordered key-value pairs
+	defaultConfigPath := filepath.Join(tmplDir, spec.DefaultConfigFilename)
+	keys, defaults, err := loadOrderedYAML(defaultConfigPath)
+	if err != nil {
+		return fmt.Errorf("load defaults: %w", err)
+	}
+
+	// Step 1: Ask project name
+	namePrompt := promptui.Prompt{
+		Label:   "Project name",
+		Default: defaults["name"],
+	}
+	projectName, err := namePrompt.Run()
+	if err != nil {
+		return handlePromptErr(err)
+	}
+	projectName = strings.TrimSpace(projectName)
+	if projectName == "" {
+		projectName = templateName
+	}
+	defaults["name"] = projectName
+	fmt.Println()
+
+	// Step 2: Choose setup mode
+	modes := []setupMode{
+		{Name: "Generate with defaults", Description: "Use default settings, generate project now"},
+		{Name: "Configure interactively", Description: "Customize each option, then generate"},
+		{Name: "Save config file only", Description: "Create genxcode.yaml for manual editing"},
+	}
+
+	modeTemplates := &promptui.SelectTemplates{
+		Active:   "  > {{ .Name | cyan | bold }}  {{ .Description | faint }}",
+		Inactive: "    {{ .Name | white }}  {{ .Description | faint }}",
+		Selected: "  * {{ .Name | green | bold }}",
+		Help:     " ",
+	}
+
+	modePrompt := promptui.Select{
+		Label:     "How would you like to set up?",
+		Items:     modes,
+		Templates: modeTemplates,
+		Size:      3,
+		HideHelp:  true,
+	}
+
+	modeIdx, _, err := modePrompt.Run()
+	if err != nil {
+		return handlePromptErr(err)
+	}
+	fmt.Println()
+
+	switch modeIdx {
+	case 0: // Generate with defaults
+		parsed := make(map[string]interface{})
+		for k, v := range defaults {
+			parsed[k] = parseValue(v)
 		}
+		parsed["name"] = projectName
+		return generateProject(mgr, templateName, spec, parsed)
 
-		tmplDir := mgr.TemplateDir(templateName)
-		spec, err := config.LoadTemplateSpec(filepath.Join(tmplDir, "template.yaml"))
+	case 1: // Configure interactively
+		configData, err := interactiveConfig(keys, defaults, templateName)
 		if err != nil {
 			return err
 		}
+		return generateProject(mgr, templateName, spec, configData)
 
-		defaultConfigPath := filepath.Join(tmplDir, spec.DefaultConfigFilename)
-		dest := config.DefaultConfigFilename
-		if err := config.WriteDefaultConfig(dest, templateName, defaultConfigPath, forceFlag); err != nil {
+	case 2: // Save config only
+		configData, err := interactiveConfig(keys, defaults, templateName)
+		if err != nil {
 			return err
 		}
-		fmt.Printf("Created %s\n", dest)
-		if spec.ApplyHint != "" {
-			fmt.Printf("  %s\n", spec.ApplyHint)
+		return saveConfigFile(templateName, configData, spec)
+	}
+	return nil
+}
+
+// interactiveConfig prompts user for each field, showing defaults.
+func interactiveConfig(keys []string, defaults map[string]string, templateName string) (map[string]interface{}, error) {
+	scanner := bufio.NewScanner(os.Stdin)
+	result := make(map[string]interface{})
+
+	fmt.Println("  Configure your project (press Enter to keep default):")
+	fmt.Println()
+
+	for _, key := range keys {
+		// Skip template and name — already set
+		if key == "template" || key == "name" {
+			result[key] = defaults[key]
+			continue
 		}
-		return nil
-	},
+
+		defVal := defaults[key]
+		fmt.Printf("  \033[36m%s\033[0m \033[2m(%s)\033[0m: ", key, defVal)
+
+		scanner.Scan()
+		input := strings.TrimSpace(scanner.Text())
+		if input == "" {
+			input = defVal
+		}
+
+		result[key] = parseValue(input)
+	}
+	fmt.Println()
+	return result, nil
+}
+
+// parseValue tries to convert string input to appropriate Go type.
+func parseValue(s string) interface{} {
+	// Bool
+	if s == "true" {
+		return true
+	}
+	if s == "false" {
+		return false
+	}
+
+	// Comma-separated list
+	if strings.Contains(s, ",") {
+		parts := strings.Split(s, ",")
+		// Try as int list
+		allInt := true
+		var ints []interface{}
+		for _, p := range parts {
+			p = strings.TrimSpace(p)
+			if n, err := strconv.Atoi(p); err == nil {
+				ints = append(ints, n)
+			} else {
+				allInt = false
+				break
+			}
+		}
+		if allInt && len(ints) > 0 {
+			return ints
+		}
+		// String list
+		var strs []interface{}
+		for _, p := range parts {
+			strs = append(strs, strings.TrimSpace(p))
+		}
+		return strs
+	}
+
+	// Int
+	if n, err := strconv.Atoi(s); err == nil {
+		return n
+	}
+
+	// Float
+	if f, err := strconv.ParseFloat(s, 64); err == nil {
+		return f
+	}
+
+	return s
+}
+
+// generateProject builds the project from config data directly.
+func generateProject(mgr *template.Manager, templateName string, spec *config.TemplateSpec, configData map[string]interface{}) error {
+	// Merge with defaults
+	tmplDir := mgr.TemplateDir(templateName)
+	defaultPath := filepath.Join(tmplDir, spec.DefaultConfigFilename)
+	defaultData, err := loadYAMLMap(defaultPath)
+	if err != nil {
+		return fmt.Errorf("load defaults: %w", err)
+	}
+	merged := mergeMaps(defaultData, configData)
+	merged["template"] = templateName
+
+	name := "project"
+	if n, ok := merged["name"].(string); ok && n != "" {
+		name = n
+	}
+	merged["name"] = name
+
+	ctx, err := generator.BuildContext(merged)
+	if err != nil {
+		return fmt.Errorf("build context: %w", err)
+	}
+
+	outputDir := filepath.Join(".", name)
+	fmt.Printf("  Generating %s (%s) in %s\n\n", name, templateName, outputDir)
+	if err := generator.GenerateProject(tmplDir, outputDir, ctx); err != nil {
+		return fmt.Errorf("generate: %w", err)
+	}
+
+	fmt.Printf("\n  Done! Project created at ./%s\n", name)
+	if spec.ApplyHint != "" {
+		fmt.Printf("  %s\n", spec.ApplyHint)
+	}
+	return nil
+}
+
+// saveConfigFile writes genxcode.yaml from collected config data.
+func saveConfigFile(templateName string, configData map[string]interface{}, spec *config.TemplateSpec) error {
+	configData["template"] = templateName
+	dest := config.DefaultConfigFilename
+
+	if _, err := os.Stat(dest); err == nil && !forceFlag {
+		return fmt.Errorf("%s already exists. Use --force to overwrite", dest)
+	}
+
+	out, err := yaml.Marshal(configData)
+	if err != nil {
+		return fmt.Errorf("marshal config: %w", err)
+	}
+
+	content := fmt.Sprintf("# Generated by `genxcode init %s`\n%s", templateName, string(out))
+	if err := os.WriteFile(dest, []byte(content), 0644); err != nil {
+		return fmt.Errorf("write config: %w", err)
+	}
+
+	fmt.Printf("  Created %s\n", dest)
+	fmt.Println("  Run `genxcode apply` to generate your project.")
+	if spec.ApplyHint != "" {
+		fmt.Printf("  %s\n", spec.ApplyHint)
+	}
+	return nil
+}
+
+// loadOrderedYAML reads a YAML file and returns keys in order + values as strings.
+func loadOrderedYAML(path string) ([]string, map[string]string, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	// Parse with yaml.v3 Node to preserve key order
+	var node yaml.Node
+	if err := yaml.Unmarshal(data, &node); err != nil {
+		return nil, nil, err
+	}
+
+	if node.Kind != yaml.DocumentNode || len(node.Content) == 0 {
+		return nil, nil, fmt.Errorf("invalid YAML structure")
+	}
+
+	mapping := node.Content[0]
+	if mapping.Kind != yaml.MappingNode {
+		return nil, nil, fmt.Errorf("expected mapping at top level")
+	}
+
+	var keys []string
+	vals := make(map[string]string)
+
+	for i := 0; i+1 < len(mapping.Content); i += 2 {
+		keyNode := mapping.Content[i]
+		valNode := mapping.Content[i+1]
+		key := keyNode.Value
+		keys = append(keys, key)
+
+		switch valNode.Kind {
+		case yaml.SequenceNode:
+			// Format as comma-separated
+			var items []string
+			for _, item := range valNode.Content {
+				items = append(items, item.Value)
+			}
+			vals[key] = strings.Join(items, ", ")
+		default:
+			vals[key] = valNode.Value
+		}
+	}
+
+	return keys, vals, nil
+}
+
+func handlePromptErr(err error) error {
+	if err == promptui.ErrInterrupt || err == promptui.ErrEOF {
+		fmt.Println("\nCancelled.")
+		os.Exit(0)
+	}
+	return err
 }
 
 var applyCmd = &cobra.Command{
@@ -243,38 +534,76 @@ func selfUpdate() error {
 	return nil
 }
 
+type templateItem struct {
+	Name        string
+	Description string
+	Aliases     string
+}
+
 var listCmd = &cobra.Command{
 	Use:   "list",
-	Short: "List cached templates",
+	Short: "Browse and select from available templates",
 	RunE: func(cmd *cobra.Command, args []string) error {
+		printLogo()
 		mgr := newManager()
-		cached, err := mgr.ListCached()
+
+		// Fetch available template names from remote
+		available, err := mgr.ListAvailable()
 		if err != nil {
-			return err
+			return fmt.Errorf("failed to list templates: %w", err)
 		}
-		if len(cached) == 0 {
-			fmt.Println("No cached templates. Run `genxcode init <template>` to download one.")
+		if len(available) == 0 {
+			fmt.Println("No templates available.")
 			return nil
 		}
-		fmt.Println("Available templates:")
-		for _, name := range cached {
+
+		// Build items with descriptions (fetch specs for cached templates)
+		items := make([]templateItem, 0, len(available))
+		for _, name := range available {
+			item := templateItem{Name: name}
 			tmplDir := mgr.TemplateDir(name)
 			spec, err := config.LoadTemplateSpec(filepath.Join(tmplDir, "template.yaml"))
-			if err != nil {
-				fmt.Printf("  - %s (error reading spec: %v)\n", name, err)
-				continue
+			if err == nil {
+				if spec.Description != "" {
+					item.Description = truncate(spec.Description, 50)
+				}
+				if len(spec.Aliases) > 0 {
+					item.Aliases = strings.Join(spec.Aliases, ", ")
+				}
 			}
-			desc := ""
-			if spec.Description != "" {
-				desc = fmt.Sprintf(": %s", spec.Description)
-			}
-			aliases := ""
-			if len(spec.Aliases) > 0 {
-				aliases = fmt.Sprintf(" (aliases: %s)", strings.Join(spec.Aliases, ", "))
-			}
-			fmt.Printf("  - %s%s%s\n", spec.Name, aliases, desc)
+			items = append(items, item)
 		}
-		return nil
+
+		// Interactive selection
+		templates := &promptui.SelectTemplates{
+			Label:    "{{ . }}",
+			Active:   "  > {{ .Name | cyan | bold }}{{ if .Description }}  {{ .Description | faint }}{{ end }}",
+			Inactive: "    {{ .Name | white }}{{ if .Description }}  {{ .Description | faint }}{{ end }}",
+			Selected: "  * {{ .Name | green | bold }}",
+			Help:     " ",
+		}
+
+		prompt := promptui.Select{
+			Label:             "Select a template (↑/↓ to move, enter to select)",
+			Items:             items,
+			Templates:         templates,
+			Size:              10,
+			HideHelp:          true,
+			StartInSearchMode: false,
+		}
+
+		idx, _, err := prompt.Run()
+		if err != nil {
+			if err == promptui.ErrInterrupt || err == promptui.ErrEOF {
+				fmt.Println("Selection cancelled.")
+				return nil
+			}
+			return fmt.Errorf("prompt failed: %w", err)
+		}
+
+		selected := items[idx]
+		fmt.Println()
+		return runWizard(selected.Name)
 	},
 }
 
@@ -326,6 +655,13 @@ func loadYAMLMap(path string) (map[string]interface{}, error) {
 		return nil, err
 	}
 	return m, nil
+}
+
+func truncate(s string, maxLen int) string {
+	if len(s) <= maxLen {
+		return s
+	}
+	return s[:maxLen-3] + "..."
 }
 
 func mergeMaps(base, overlay map[string]interface{}) map[string]interface{} {

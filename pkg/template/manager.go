@@ -216,6 +216,58 @@ func (m *Manager) ListCached() ([]string, error) {
 	return names, nil
 }
 
+// ListAvailable fetches all template names from the remote repo.
+func (m *Manager) ListAvailable() ([]string, error) {
+	apiURL := rawToAPI(m.RemoteBase)
+
+	req, err := http.NewRequest("GET", apiURL, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Accept", "application/vnd.github+json")
+	req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
+
+	resp, err := m.HTTPClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("list remote templates: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != 200 {
+		// Fallback to cached list if remote fails
+		return m.ListCached()
+	}
+
+	var items []struct {
+		Type string `json:"type"`
+		Name string `json:"name"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&items); err != nil {
+		return m.ListCached()
+	}
+
+	var names []string
+	for _, item := range items {
+		if item.Type == "dir" {
+			names = append(names, item.Name)
+		}
+	}
+
+	// Also ensure they're cached so we can read specs
+	for _, name := range names {
+		if !m.IsCached(name) {
+			// Fetch just the manifest for description
+			dir := m.TemplateDir(name)
+			os.MkdirAll(dir, 0755)
+			manifestURL := fmt.Sprintf("%s/%s/%s", m.RemoteBase, name, "template.yaml")
+			manifestPath := filepath.Join(dir, "template.yaml")
+			m.downloadFile(manifestURL, manifestPath)
+		}
+	}
+
+	return names, nil
+}
+
 // ClearCache removes all cached templates.
 func (m *Manager) ClearCache() error {
 	return os.RemoveAll(m.CacheDir)
