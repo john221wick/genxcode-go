@@ -79,8 +79,10 @@ type setupMode struct {
 
 func runWizard(templateName string) error {
 	mgr := newManager()
+	defer mgr.Cleanup()
 
-	if err := mgr.EnsureAvailable(templateName); err != nil {
+	fmt.Printf("  Downloading template: %s...\n\n", templateName)
+	if err := mgr.Fetch(templateName); err != nil {
 		return fmt.Errorf("failed to fetch template: %w", err)
 	}
 
@@ -374,7 +376,10 @@ var applyCmd = &cobra.Command{
 		}
 
 		mgr := newManager()
-		if err := mgr.EnsureAvailable(cfg.Template); err != nil {
+		defer mgr.Cleanup()
+
+		fmt.Printf("Downloading template: %s...\n", cfg.Template)
+		if err := mgr.Fetch(cfg.Template); err != nil {
 			return fmt.Errorf("failed to fetch template: %w", err)
 		}
 
@@ -546,8 +551,9 @@ var listCmd = &cobra.Command{
 	RunE: func(cmd *cobra.Command, args []string) error {
 		printLogo()
 		mgr := newManager()
+		defer mgr.Cleanup()
 
-		// Fetch available template names from remote
+		fmt.Println("  Fetching available templates...")
 		available, err := mgr.ListAvailable()
 		if err != nil {
 			return fmt.Errorf("failed to list templates: %w", err)

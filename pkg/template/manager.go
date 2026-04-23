@@ -12,24 +12,25 @@ import (
 )
 
 const (
-	defaultOwner = "john221wick"
-	defaultRepo  = "genxcode-go"
+	defaultOwner  = "john221wick"
+	defaultRepo   = "genxcode-go"
 	defaultBranch = "main"
 	templatesPath = "templates"
 )
 
-// Manager handles fetching and caching templates.
+// Manager handles fetching templates from remote. No persistent cache —
+// templates are downloaded fresh to a temp directory every time.
 type Manager struct {
-	CacheDir    string
-	RemoteBase  string
-	HTTPClient  *http.Client
+	TempDir    string
+	RemoteBase string
+	HTTPClient *http.Client
 }
 
 // NewManager creates a template manager with default settings.
 func NewManager() *Manager {
-	cacheDir := defaultCacheDir()
+	tmpDir, _ := os.MkdirTemp("", "genxcode-templates-*")
 	return &Manager{
-		CacheDir:   cacheDir,
+		TempDir:    tmpDir,
 		RemoteBase: fmt.Sprintf("https://raw.githubusercontent.com/%s/%s/%s/%s", defaultOwner, defaultRepo, defaultBranch, templatesPath),
 		HTTPClient: &http.Client{Timeout: 30 * time.Second},
 	}
@@ -37,34 +38,25 @@ func NewManager() *Manager {
 
 // NewManagerWithRepo allows customizing the remote repo.
 func NewManagerWithRepo(owner, repo, branch string) *Manager {
-	cacheDir := defaultCacheDir()
+	tmpDir, _ := os.MkdirTemp("", "genxcode-templates-*")
 	return &Manager{
-		CacheDir:   cacheDir,
+		TempDir:    tmpDir,
 		RemoteBase: fmt.Sprintf("https://raw.githubusercontent.com/%s/%s/%s/%s", owner, repo, branch, templatesPath),
 		HTTPClient: &http.Client{Timeout: 30 * time.Second},
 	}
 }
 
-func defaultCacheDir() string {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		home = "."
-	}
-	return filepath.Join(home, ".genxcode", "templates")
+// Cleanup removes the temp directory. Call when done.
+func (m *Manager) Cleanup() {
+	os.RemoveAll(m.TempDir)
 }
 
-// TemplateDir returns the local path for a template.
+// TemplateDir returns the local temp path for a template.
 func (m *Manager) TemplateDir(name string) string {
-	return filepath.Join(m.CacheDir, name)
+	return filepath.Join(m.TempDir, name)
 }
 
-// IsCached checks if a template exists locally.
-func (m *Manager) IsCached(name string) bool {
-	_, err := os.Stat(m.TemplateDir(name))
-	return err == nil
-}
-
-// Fetch downloads a template from the remote repo.
+// Fetch downloads a template from the remote repo to a temp directory.
 func (m *Manager) Fetch(name string) error {
 	dir := m.TemplateDir(name)
 	if err := os.MkdirAll(dir, 0755); err != nil {
@@ -77,6 +69,11 @@ func (m *Manager) Fetch(name string) error {
 	if err := m.downloadFile(manifestURL, manifestPath); err != nil {
 		return fmt.Errorf("fetch manifest: %w", err)
 	}
+
+	// Also download the default config (genxcode.yaml)
+	configURL := fmt.Sprintf("%s/%s/%s", m.RemoteBase, name, "genxcode.yaml")
+	configPath := filepath.Join(dir, "genxcode.yaml")
+	m.downloadFile(configURL, configPath) // ignore error, some templates may not have it
 
 	// Read manifest to discover files directory
 	manifestData, err := os.ReadFile(manifestPath)
@@ -98,11 +95,22 @@ func (m *Manager) Fetch(name string) error {
 	return m.fetchDirectory(fmt.Sprintf("%s/%s/%s", m.RemoteBase, name, filesDir), filesBasePath)
 }
 
+// FetchManifestOnly downloads only the template.yaml manifest (for listing).
+func (m *Manager) FetchManifestOnly(name string) error {
+	dir := m.TemplateDir(name)
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return fmt.Errorf("mkdir: %w", err)
+	}
+
+	manifestURL := fmt.Sprintf("%s/%s/%s", m.RemoteBase, name, "template.yaml")
+	manifestPath := filepath.Join(dir, "template.yaml")
+	return m.downloadFile(manifestURL, manifestPath)
+}
+
 // fetchDirectory downloads all files in a remote directory using GitHub API.
 func (m *Manager) fetchDirectory(remoteURL, localPath string) error {
-	// Convert raw URL to API URL for listing
 	apiURL := rawToAPI(remoteURL)
-	
+
 	req, err := http.NewRequest("GET", apiURL, nil)
 	if err != nil {
 		return err
@@ -117,7 +125,6 @@ func (m *Manager) fetchDirectory(remoteURL, localPath string) error {
 	defer resp.Body.Close()
 
 	if resp.StatusCode == 404 {
-		// Directory might not exist, try as single file
 		return m.downloadFile(remoteURL, localPath)
 	}
 	if resp.StatusCode != 200 {
@@ -154,18 +161,10 @@ func (m *Manager) fetchDirectory(remoteURL, localPath string) error {
 }
 
 func rawToAPI(rawURL string) string {
-	// https://raw.githubusercontent.com/owner/repo/branch/path
-	// -> https://api.github.com/repos/owner/repo/contents/path
 	parts := strings.SplitN(rawURL, "/", 6)
 	if len(parts) < 6 {
 		return rawURL
 	}
-	// parts[0] = https:
-	// parts[1] = ""
-	// parts[2] = raw.githubusercontent.com
-	// parts[3] = owner
-	// parts[4] = repo
-	// parts[5] = branch/path...
 	branchAndPath := parts[5]
 	branchPathParts := strings.SplitN(branchAndPath, "/", 2)
 	branch := branchPathParts[0]
@@ -198,24 +197,6 @@ func (m *Manager) downloadFile(url, dest string) error {
 	return err
 }
 
-// ListCached returns names of locally cached templates.
-func (m *Manager) ListCached() ([]string, error) {
-	entries, err := os.ReadDir(m.CacheDir)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return nil, nil
-		}
-		return nil, err
-	}
-	var names []string
-	for _, e := range entries {
-		if e.IsDir() {
-			names = append(names, e.Name())
-		}
-	}
-	return names, nil
-}
-
 // ListAvailable fetches all template names from the remote repo.
 func (m *Manager) ListAvailable() ([]string, error) {
 	apiURL := rawToAPI(m.RemoteBase)
@@ -234,8 +215,8 @@ func (m *Manager) ListAvailable() ([]string, error) {
 	defer resp.Body.Close()
 
 	if resp.StatusCode != 200 {
-		// Fallback to cached list if remote fails
-		return m.ListCached()
+		body, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("failed to list templates: %s - %s", resp.Status, string(body))
 	}
 
 	var items []struct {
@@ -243,7 +224,7 @@ func (m *Manager) ListAvailable() ([]string, error) {
 		Name string `json:"name"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&items); err != nil {
-		return m.ListCached()
+		return nil, fmt.Errorf("decode listing: %w", err)
 	}
 
 	var names []string
@@ -253,31 +234,10 @@ func (m *Manager) ListAvailable() ([]string, error) {
 		}
 	}
 
-	// Also ensure they're cached so we can read specs
+	// Download manifests so we can show descriptions
 	for _, name := range names {
-		if !m.IsCached(name) {
-			// Fetch just the manifest for description
-			dir := m.TemplateDir(name)
-			os.MkdirAll(dir, 0755)
-			manifestURL := fmt.Sprintf("%s/%s/%s", m.RemoteBase, name, "template.yaml")
-			manifestPath := filepath.Join(dir, "template.yaml")
-			m.downloadFile(manifestURL, manifestPath)
-		}
+		m.FetchManifestOnly(name)
 	}
 
 	return names, nil
-}
-
-// ClearCache removes all cached templates.
-func (m *Manager) ClearCache() error {
-	return os.RemoveAll(m.CacheDir)
-}
-
-// EnsureAvailable checks cache and fetches if missing.
-func (m *Manager) EnsureAvailable(name string) error {
-	if m.IsCached(name) {
-		return nil
-	}
-	fmt.Printf("Template %s not cached. Downloading...\n", name)
-	return m.Fetch(name)
 }
