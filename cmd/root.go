@@ -1,9 +1,14 @@
 package cmd
 
 import (
+	"encoding/json"
 	"fmt"
+	"io"
+	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 
 	"github.com/john221wick/genxcode-go/pkg/config"
@@ -117,40 +122,125 @@ var applyCmd = &cobra.Command{
 }
 
 var updateCmd = &cobra.Command{
-	Use:   "update [template]",
-	Short: "Update cached templates from remote",
-	Args:  cobra.MaximumNArgs(1),
+	Use:   "update",
+	Short: "Update genxcode to the latest release",
 	RunE: func(cmd *cobra.Command, args []string) error {
-		mgr := newManager()
-		if len(args) > 0 {
-			name := args[0]
-			fmt.Printf("Updating template %s...\n", name)
-			if err := mgr.Fetch(name); err != nil {
-				return err
-			}
-			fmt.Printf("Updated %s\n", name)
-			return nil
-		}
-
-		// Update all cached
-		cached, err := mgr.ListCached()
-		if err != nil {
-			return err
-		}
-		if len(cached) == 0 {
-			fmt.Println("No cached templates. Run `genxcode init <template>` first.")
-			return nil
-		}
-		for _, name := range cached {
-			fmt.Printf("Updating template %s...\n", name)
-			if err := mgr.Fetch(name); err != nil {
-				fmt.Fprintf(os.Stderr, "  failed: %v\n", err)
-				continue
-			}
-			fmt.Printf("  done\n")
-		}
-		return nil
+		return selfUpdate()
 	},
+}
+
+func selfUpdate() error {
+	currentVer := strings.TrimPrefix(config.Version, "v")
+	if currentVer == "" || currentVer == "dev" {
+		fmt.Println("You are running a development build. Skipping self-update.")
+		return nil
+	}
+
+	// Fetch latest release tag
+	apiURL := "https://api.github.com/repos/john221wick/genxcode-go/releases/latest"
+	resp, err := http.Get(apiURL)
+	if err != nil {
+		return fmt.Errorf("failed to check for updates: %w", err)
+	}
+	defer resp.Body.Close()
+
+	var release struct {
+		TagName string `json:"tag_name"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&release); err != nil {
+		return fmt.Errorf("failed to parse release info: %w", err)
+	}
+
+	latestVer := strings.TrimPrefix(release.TagName, "v")
+	if latestVer == currentVer {
+		fmt.Printf("genxcode is already up to date (%s).\n", currentVer)
+		return nil
+	}
+
+	fmt.Printf("Current: v%s  Latest: v%s\n", currentVer, latestVer)
+
+	// Detect OS/arch
+	goos := runtime.GOOS
+	goarch := runtime.GOARCH
+	if goarch == "amd64" {
+		goarch = "amd64"
+	}
+
+	ext := "tar.gz"
+	if goos == "windows" {
+		ext = "zip"
+	}
+
+	assetName := fmt.Sprintf("genxcode_%s_%s_%s.%s", latestVer, goos, goarch, ext)
+	downloadURL := fmt.Sprintf("https://github.com/john221wick/genxcode-go/releases/download/v%s/%s", latestVer, assetName)
+
+	fmt.Printf("Downloading %s...\n", assetName)
+
+	// Download to temp file
+	tmpFile, err := os.CreateTemp("", "genxcode-update-*")
+	if err != nil {
+		return fmt.Errorf("create temp file: %w", err)
+	}
+	defer os.Remove(tmpFile.Name())
+
+	dlResp, err := http.Get(downloadURL)
+	if err != nil {
+		return fmt.Errorf("download failed: %w", err)
+	}
+	defer dlResp.Body.Close()
+	if dlResp.StatusCode != 200 {
+		return fmt.Errorf("download failed: HTTP %s (asset may not exist for your platform)", dlResp.Status)
+	}
+
+	if _, err := io.Copy(tmpFile, dlResp.Body); err != nil {
+		return fmt.Errorf("write download: %w", err)
+	}
+	tmpFile.Close()
+
+	// Extract if archive
+	extractedPath := tmpFile.Name()
+	if ext == "tar.gz" {
+		extractDir, err := os.MkdirTemp("", "genxcode-extract-*")
+		if err != nil {
+			return fmt.Errorf("create extract dir: %w", err)
+		}
+		defer os.RemoveAll(extractDir)
+
+		cmd := exec.Command("tar", "-xzf", tmpFile.Name(), "-C", extractDir)
+		if err := cmd.Run(); err != nil {
+			return fmt.Errorf("extract archive: %w", err)
+		}
+		extractedPath = filepath.Join(extractDir, "genxcode")
+	}
+
+	if err := os.Chmod(extractedPath, 0755); err != nil {
+		return fmt.Errorf("chmod: %w", err)
+	}
+
+	// Find current binary path
+	currentPath, err := os.Executable()
+	if err != nil {
+		return fmt.Errorf("find current binary: %w", err)
+	}
+	currentPath, err = filepath.EvalSymlinks(currentPath)
+	if err != nil {
+		return fmt.Errorf("resolve binary path: %w", err)
+	}
+
+	// Replace binary: rename old, move new
+	oldPath := currentPath + ".old"
+	if err := os.Rename(currentPath, oldPath); err != nil {
+		return fmt.Errorf("backup old binary: %w", err)
+	}
+	if err := os.Rename(extractedPath, currentPath); err != nil {
+		// Try to restore old
+		os.Rename(oldPath, currentPath)
+		return fmt.Errorf("install new binary: %w", err)
+	}
+	os.Remove(oldPath)
+
+	fmt.Printf("Updated genxcode to v%s\n", latestVer)
+	return nil
 }
 
 var listCmd = &cobra.Command{
