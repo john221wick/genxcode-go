@@ -19,9 +19,11 @@ builds:
     binary: genxcode
 
 archives:
-  - format: tar.gz
+  - id: genxcode
+    formats:
+      - tar.gz
     name_template: >-
-      {{ .ProjectName }}_
+      {{ .Binary }}_
       {{- .Version }}_
       {{- .Os }}_
       {{- if eq .Arch "amd64" }}amd64
@@ -30,13 +32,14 @@ archives:
       {{- if .Arm }}v{{ .Arm }}{{ end }}
     format_overrides:
       - goos: windows
-        format: zip
+        formats:
+          - zip
 
 checksum:
   name_template: 'checksums.txt'
 
 snapshot:
-  name_template: "{{ incpatch .Version }}-next"
+  version_template: "{{ incpatch .Version }}-next"
 
 changelog:
   sort: asc

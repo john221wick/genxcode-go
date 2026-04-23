@@ -21,9 +21,20 @@ case "$OS" in
 esac
 
 # Fetch latest release tag
-TAG=$(curl -s "https://api.github.com/repos/$REPO/releases/latest" | grep '"tag_name":' | sed -E 's/.*"([^"]+)".*/\1/')
+API_URL="https://api.github.com/repos/$REPO/releases/latest"
+API_RESPONSE=$(curl -s "$API_URL")
+TAG=$(echo "$API_RESPONSE" | grep '"tag_name":' | sed -E 's/.*"([^"]+)".*/\1/')
 if [ -z "$TAG" ]; then
-    echo "Failed to fetch latest release tag"
+    echo "Error: Failed to fetch latest release tag."
+    echo ""
+    echo "GitHub API response:"
+    echo "$API_RESPONSE"
+    echo ""
+    echo "This usually means:"
+    echo "  1. The repo $REPO does not exist on GitHub yet"
+    echo "  2. The repo exists but has no releases"
+    echo ""
+    echo "To fix: create the repo, push code, and run 'make publish'"
     exit 1
 fi
 
@@ -34,7 +45,8 @@ URL="https://github.com/$REPO/releases/download/$TAG/${BINARY}_${TAG}_${OS}_${AR
 TMPDIR=$(mktemp -d)
 trap 'rm -rf "$TMPDIR"' EXIT
 
-curl -sSL "$URL" -o "$TMPDIR/${BINARY}.tar.gz"
+echo "Downloading from $URL..."
+curl -fsSL "$URL" -o "$TMPDIR/${BINARY}.tar.gz"
 tar -xzf "$TMPDIR/${BINARY}.tar.gz" -C "$TMPDIR"
 
 # Install
