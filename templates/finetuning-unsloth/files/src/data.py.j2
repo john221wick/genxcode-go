@@ -1,0 +1,30 @@
+from datasets import load_dataset
+
+from .config import DATASET_CONFIG
+
+
+def load_and_prepare_dataset(tokenizer):
+    dataset = load_dataset(DATASET_CONFIG["dataset_name"], split="train")
+
+{{ if ne .ChatTemplate "none" }}
+    def format_chat(example):
+        messages = []
+{{ if .SystemPrompt }}
+        messages.append({"role": "system", "content": DATASET_CONFIG["system_prompt"]})
+{{ end }}
+        if "instruction" in example and "output" in example:
+            messages.append({"role": "user", "content": example["instruction"]})
+            messages.append({"role": "assistant", "content": example["output"]})
+        elif "question" in example and "answer" in example:
+            messages.append({"role": "user", "content": example["question"]})
+            messages.append({"role": "assistant", "content": example["answer"]})
+        else:
+            text_field = DATASET_CONFIG["dataset_text_field"]
+            messages.append({"role": "user", "content": example.get(text_field, "")})
+        example["text"] = tokenizer.apply_chat_template(messages, tokenize=False)
+        return example
+
+    dataset = dataset.map(format_chat)
+{{ end }}
+
+    return dataset

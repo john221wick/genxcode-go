@@ -121,6 +121,10 @@ func TemplateFuncs() template.FuncMap {
 		"last": func(i, len int) bool {
 			return i == len-1
 		},
+		"upper": strings.ToUpper,
+		"split": func(s string, sep string) []string {
+			return strings.Split(s, sep)
+		},
 	}
 }
 

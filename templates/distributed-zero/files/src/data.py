@@ -1,0 +1,34 @@
+import torch
+from torch.utils.data import Dataset, DataLoader, DistributedSampler
+
+from .config import MODEL_CONFIG, TRAINING_CONFIG
+
+
+class RandomTokenDataset(Dataset):
+    """Dummy dataset — replace with your actual data."""
+
+    def __init__(self, num_samples=10000):
+        self.num_samples = num_samples
+        self.seq_len = MODEL_CONFIG["seq_len"]
+        self.vocab_size = MODEL_CONFIG["vocab_size"]
+
+    def __len__(self):
+        return self.num_samples
+
+    def __getitem__(self, idx):
+        input_ids = torch.randint(0, self.vocab_size, (self.seq_len,))
+        labels = input_ids.clone()
+        return {"input_ids": input_ids, "labels": labels}
+
+
+def create_distributed_dataloader(dataset, rank, world_size):
+    sampler = DistributedSampler(dataset, num_replicas=world_size, rank=rank, shuffle=True)
+    loader = DataLoader(
+        dataset,
+        batch_size=TRAINING_CONFIG["batch_size"],
+        sampler=sampler,
+        num_workers=2,
+        pin_memory=True,
+        drop_last=True,
+    )
+    return loader, sampler

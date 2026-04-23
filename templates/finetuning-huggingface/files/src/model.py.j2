@@ -1,0 +1,67 @@
+import torch
+from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
+{{- if .UseLora}}
+from peft import LoraConfig, get_peft_model, prepare_model_for_kbit_training
+{{- end}}
+
+from .config import MODEL_CONFIG
+
+
+def load_tokenizer():
+    tokenizer = AutoTokenizer.from_pretrained(MODEL_CONFIG["model_name"])
+    if tokenizer.pad_token is None:
+        tokenizer.pad_token = tokenizer.eos_token
+        tokenizer.pad_token_id = tokenizer.eos_token_id
+    return tokenizer
+
+
+def load_model():
+{{- if .LoadIn4bit}}
+    bnb_config = BitsAndBytesConfig(
+        load_in_4bit=True,
+        bnb_4bit_quant_type=MODEL_CONFIG["bnb_4bit_quant_type"],
+        bnb_4bit_compute_dtype=getattr(torch, MODEL_CONFIG["bnb_4bit_compute_dtype"]),
+        bnb_4bit_use_double_quant=True,
+    )
+    model = AutoModelForCausalLM.from_pretrained(
+        MODEL_CONFIG["model_name"],
+        quantization_config=bnb_config,
+        device_map="auto",
+        torch_dtype=torch.bfloat16,
+    )
+{{- else if .LoadIn8bit}}
+    bnb_config = BitsAndBytesConfig(load_in_8bit=True)
+    model = AutoModelForCausalLM.from_pretrained(
+        MODEL_CONFIG["model_name"],
+        quantization_config=bnb_config,
+        device_map="auto",
+        torch_dtype=torch.bfloat16,
+    )
+{{- else}}
+    model = AutoModelForCausalLM.from_pretrained(
+        MODEL_CONFIG["model_name"],
+        device_map="auto",
+        torch_dtype=torch.bfloat16,
+    )
+{{- end}}
+
+{{- if .UseLora}}
+{{- if or .LoadIn4bit .LoadIn8bit}}
+    model = prepare_model_for_kbit_training(model)
+{{- end}}
+    lora_config = LoraConfig(
+        r=MODEL_CONFIG["lora_r"],
+        lora_alpha=MODEL_CONFIG["lora_alpha"],
+        lora_dropout=MODEL_CONFIG["lora_dropout"],
+        target_modules=MODEL_CONFIG["lora_target_modules"],
+        bias="none",
+        task_type="CAUSAL_LM",
+    )
+    model = get_peft_model(model, lora_config)
+    model.print_trainable_parameters()
+{{- end}}
+
+    if MODEL_CONFIG["gradient_checkpointing"]:
+        model.gradient_checkpointing_enable()
+
+    return model

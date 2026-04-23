@@ -1,0 +1,166 @@
+import torch
+import torch.nn.functional as F
+from torch.utils.data import DataLoader
+
+from .config import STUDENT_CONFIG, TRAINING_CONFIG
+from .dataset import DistillationDataset
+from .generate import generate_text
+
+
+def feedback_loop_train(model, prompts, teacher, tokenizer):
+    """
+    Iterative feedback loop: student generates, teacher critiques and corrects.
+{{ if eq .RlVariant "dpo" }}
+    Uses DPO-style training: teacher's corrected response is 'chosen',
+    student's original response is 'rejected'. Train to prefer chosen.
+{{ else }}
+    Uses GRPO-style training: generate multiple candidates, teacher scores them,
+    use scores as rewards with group baseline.
+{{ end }}
+    """
+    device = torch.device(TRAINING_CONFIG["device"])
+    n_iterations = TRAINING_CONFIG["n_iterations"]
+    n_candidates = TRAINING_CONFIG["n_candidates"]
+    keep_top = TRAINING_CONFIG["keep_top"]
+    vocab_size = STUDENT_CONFIG["vocab_size"]
+    beta = 0.1  # DPO/GRPO temperature
+
+    for iteration in range(n_iterations):
+        print(f"\n--- Feedback iteration {iteration + 1}/{n_iterations} ---")
+        training_pairs = []
+{{ if eq .RlVariant "dpo" }}
+
+        # DPO: For each prompt, get student response + teacher correction
+        for i, prompt in enumerate(prompts):
+            # Student generates
+            student_response = generate_text(
+                model, tokenizer, prompt, max_new_tokens=256, temperature=0.8
+            )
+
+            # Teacher critiques and provides corrected version
+            critique_prompt = (
+                f"The following is a student model's response to a question.\n"
+                f"Provide a corrected, improved version of the response.\n\n"
+                f"Question: {prompt}\n"
+                f"Student response: {student_response}\n\n"
+                f"Corrected response:"
+            )
+            corrected = teacher.generate(critique_prompt, temperature=0.3)
+
+            # DPO pair: chosen=corrected, rejected=student_response
+            training_pairs.append({
+                "prompt": prompt,
+                "chosen": corrected,
+                "rejected": student_response,
+            })
+
+            if (i + 1) % 10 == 0:
+                print(f"  Collected {i + 1}/{len(prompts)} feedback pairs")
+
+        # DPO loss training
+        model.train()
+        model = model.to(device)
+        optimizer = torch.optim.AdamW(model.parameters(), lr=TRAINING_CONFIG["lr"] * 0.5, weight_decay=0.1)
+
+        for pair in training_pairs:
+            prompt_ids = tokenizer.encode(pair["prompt"])
+            chosen_ids = tokenizer.encode(pair["chosen"])
+            rejected_ids = tokenizer.encode(pair["rejected"])
+
+            # Build sequences
+            chosen_input = prompt_ids + chosen_ids + [tokenizer.eos_token_id]
+            rejected_input = prompt_ids + rejected_ids + [tokenizer.eos_token_id]
+
+            max_len = STUDENT_CONFIG["context_length"]
+            chosen_input = chosen_input[:max_len]
+            rejected_input = rejected_input[:max_len]
+
+            chosen_t = torch.tensor([chosen_input], device=device)
+            rejected_t = torch.tensor([rejected_input], device=device)
+
+            # Get log probs for chosen and rejected
+            chosen_logits = model(chosen_t)
+            rejected_logits = model(rejected_t)
+
+            # Compute sequence log probs (response portion only)
+            prompt_len = len(prompt_ids)
+            chosen_logprobs = _sequence_logprobs(chosen_logits, chosen_t, prompt_len)
+            rejected_logprobs = _sequence_logprobs(rejected_logits, rejected_t, prompt_len)
+
+            # DPO loss: -log(sigmoid(beta * (chosen_logprob - rejected_logprob)))
+            loss = -F.logsigmoid(beta * (chosen_logprobs - rejected_logprobs)).mean()
+
+            optimizer.zero_grad()
+            loss.backward()
+            torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+            optimizer.step()
+
+        print(f"  DPO iteration {iteration + 1} complete")
+{{ else }}
+
+        # GRPO: Generate multiple candidates, score, use group-relative rewards
+        for i, prompt in enumerate(prompts):
+            candidates = []
+            for _ in range(n_candidates):
+                response = generate_text(
+                    model, tokenizer, prompt, max_new_tokens=256, temperature=1.0
+                )
+                score = teacher.score(prompt, response)
+                candidates.append({"response": response, "score": score})
+
+            # Group baseline: mean score for this prompt
+            scores = [c["score"] for c in candidates]
+            mean_score = sum(scores) / len(scores)
+            std_score = max((sum((s - mean_score) ** 2 for s in scores) / len(scores)) ** 0.5, 1e-6)
+
+            # Normalize rewards relative to group
+            for c in candidates:
+                c["advantage"] = (c["score"] - mean_score) / std_score
+
+            training_pairs.extend([
+                {"prompt": prompt, "response": c["response"], "advantage": c["advantage"]}
+                for c in candidates
+            ])
+
+            if (i + 1) % 10 == 0:
+                print(f"  Scored {i + 1}/{len(prompts)} prompts ({n_candidates} candidates each)")
+
+        # GRPO loss training
+        model.train()
+        model = model.to(device)
+        optimizer = torch.optim.AdamW(model.parameters(), lr=TRAINING_CONFIG["lr"] * 0.5, weight_decay=0.1)
+
+        for pair in training_pairs:
+            prompt_ids = tokenizer.encode(pair["prompt"])
+            response_ids = tokenizer.encode(pair["response"])
+            advantage = pair["advantage"]
+
+            input_ids = prompt_ids + response_ids + [tokenizer.eos_token_id]
+            input_ids = input_ids[: STUDENT_CONFIG["context_length"]]
+            input_t = torch.tensor([input_ids], device=device)
+
+            logits = model(input_t)
+            prompt_len = len(prompt_ids)
+            logprobs = _sequence_logprobs(logits, input_t, prompt_len)
+
+            # Policy gradient: -advantage * log_prob
+            loss = -advantage * logprobs.mean()
+
+            optimizer.zero_grad()
+            loss.backward()
+            torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+            optimizer.step()
+
+        print(f"  GRPO iteration {iteration + 1} complete")
+{{ end }}
+
+    return model
+
+
+def _sequence_logprobs(logits, input_ids, prompt_len):
+    """Compute log probabilities for response tokens only."""
+    shift_logits = logits[:, prompt_len - 1 : -1, :]
+    shift_labels = input_ids[:, prompt_len:]
+    log_probs = F.log_softmax(shift_logits, dim=-1)
+    token_logprobs = log_probs.gather(2, shift_labels.unsqueeze(-1)).squeeze(-1)
+    return token_logprobs.sum(dim=-1)

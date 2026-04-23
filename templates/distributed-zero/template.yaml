@@ -1,0 +1,6 @@
+name: distributed-zero
+description: ZeRO (Stages 1-3) optimizer/gradient/parameter sharding with pure PyTorch
+aliases:
+  - zero
+  - zero-dp
+apply_hint: Install deps with `pip install -r requirements.txt`, then run `bash launch.sh`

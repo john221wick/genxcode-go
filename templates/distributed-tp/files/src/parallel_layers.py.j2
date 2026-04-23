@@ -1,0 +1,71 @@
+"""Tensor-parallel linear layers.
+
+ColumnParallelLinear: splits weight columns across TP ranks.
+  Y = X @ A  ->  each rank holds A_i (a column slice)
+  Output is a shard; needs all-gather to reconstruct full output.
+
+RowParallelLinear: splits weight rows across TP ranks.
+  Y = X @ A  ->  each rank holds A_i (a row slice), needs partial input
+  Output needs all-reduce to sum partial results.
+"""
+
+import torch
+import torch.nn as nn
+import torch.distributed as dist
+
+
+class ColumnParallelLinear(nn.Module):
+    """Split output features across TP ranks."""
+
+    def __init__(self, in_features, out_features, tp_group, bias=False):
+        super().__init__()
+        self.tp_group = tp_group
+        self.tp_size = dist.get_world_size(tp_group)
+        self.tp_rank = dist.get_rank(tp_group)
+
+        assert out_features % self.tp_size == 0
+        self.out_per_rank = out_features // self.tp_size
+
+        self.weight = nn.Parameter(torch.empty(self.out_per_rank, in_features))
+        nn.init.kaiming_uniform_(self.weight)
+
+        self.bias = None
+        if bias:
+            self.bias = nn.Parameter(torch.zeros(self.out_per_rank))
+
+    def forward(self, x):
+        out = torch.nn.functional.linear(x, self.weight, self.bias)
+        return out
+
+
+class RowParallelLinear(nn.Module):
+    """Split input features across TP ranks, all-reduce output."""
+
+    def __init__(self, in_features, out_features, tp_group, bias=False):
+        super().__init__()
+        self.tp_group = tp_group
+        self.tp_size = dist.get_world_size(tp_group)
+        self.tp_rank = dist.get_rank(tp_group)
+
+        assert in_features % self.tp_size == 0
+        self.in_per_rank = in_features // self.tp_size
+
+        self.weight = nn.Parameter(torch.empty(out_features, self.in_per_rank))
+        nn.init.kaiming_uniform_(self.weight)
+
+        self.bias = None
+        if bias:
+            self.bias = nn.Parameter(torch.zeros(out_features))
+
+    def forward(self, x):
+        out = torch.nn.functional.linear(x, self.weight, self.bias)
+        dist.all_reduce(out, op=dist.ReduceOp.SUM, group=self.tp_group)
+        return out
+
+
+def gather_from_tp_group(tensor, tp_group, dim=-1):
+    """All-gather tensor slices along dim from all TP ranks."""
+    world_size = dist.get_world_size(tp_group)
+    gathered = [torch.empty_like(tensor) for _ in range(world_size)]
+    dist.all_gather(gathered, tensor, group=tp_group)
+    return torch.cat(gathered, dim=dim)

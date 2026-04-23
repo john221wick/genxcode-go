@@ -1,0 +1,16 @@
+template: distributed-dp
+name: dp_training
+world_size: 4
+backend: nccl
+hidden_dim: 2048
+num_layers: 12
+num_heads: 16
+vocab_size: 32000
+seq_len: 512
+precision: bf16
+lr: 0.0003
+epochs: 10
+batch_size: 32
+gradient_accumulation_steps: 1
+max_grad_norm: 1.0
+device: cuda

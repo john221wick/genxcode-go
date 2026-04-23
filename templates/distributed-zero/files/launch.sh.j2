@@ -1,0 +1,6 @@
+#!/bin/bash
+# Launch ZeRO Stage {{ .ZeroStage }} training
+torchrun \
+    --nproc_per_node={{ .WorldSize }} \
+    --master_port=29500 \
+    main.py

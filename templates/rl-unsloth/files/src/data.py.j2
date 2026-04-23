@@ -1,0 +1,20 @@
+from datasets import load_dataset
+
+from .config import DATASET_CONFIG
+
+
+def load_preference_dataset():
+    """Load dataset for preference/RL training.
+
+{{ if or (eq .RlVariant "dpo") (eq .RlVariant "orpo") }}
+    Expected format: each row has 'prompt', 'chosen', 'rejected'.
+{{ else if eq .RlVariant "grpo" }}
+    Expected format: each row has 'prompt' (completions generated online).
+{{ end }}
+    """
+    dataset = load_dataset(DATASET_CONFIG["dataset_name"])
+
+    if "test" in dataset:
+        return dataset["train"], dataset["test"]
+    split = dataset["train"].train_test_split(test_size=0.05, seed=42)
+    return split["train"], split["test"]

@@ -1,0 +1,6 @@
+name: distributed-dp
+description: Data Parallelism training with pure PyTorch (all-reduce gradient sync)
+aliases:
+  - dp
+  - data-parallel
+apply_hint: Install deps with `pip install -r requirements.txt`, then run `bash launch.sh`

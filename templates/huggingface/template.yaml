@@ -1,0 +1,6 @@
+name: huggingface
+description: Hugging Face LLM scaffold
+aliases:
+  - hf
+  - llm
+apply_hint: Install deps, then run `python main.py`

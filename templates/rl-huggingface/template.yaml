@@ -1,0 +1,7 @@
+name: rl-huggingface
+description: RLHF/preference tuning with HuggingFace TRL (DPO, GRPO, PPO, ORPO, KTO)
+aliases:
+  - rl-hf
+  - dpo-hf
+  - grpo-hf
+apply_hint: Install deps with `pip install -r requirements.txt`, then run `python main.py`

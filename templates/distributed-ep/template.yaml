@@ -1,0 +1,7 @@
+name: distributed-ep
+description: Expert Parallelism with pure PyTorch (MoE router, all-to-all dispatch, load balancing)
+aliases:
+  - ep
+  - expert-parallel
+  - moe
+apply_hint: Install deps with `pip install -r requirements.txt`, then run `bash launch.sh`

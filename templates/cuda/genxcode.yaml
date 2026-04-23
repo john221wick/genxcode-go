@@ -1,0 +1,5 @@
+template: cuda
+name: cuda_project
+kernel_name: vector_add
+vector_size: 1048576
+block_size: 256

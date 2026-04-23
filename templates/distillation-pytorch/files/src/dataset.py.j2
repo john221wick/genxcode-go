@@ -1,0 +1,37 @@
+import torch
+from torch.utils.data import Dataset
+
+from .config import STUDENT_CONFIG
+
+
+class DistillationDataset(Dataset):
+    """Converts (prompt, response) pairs into training examples."""
+
+    def __init__(self, data, tokenizer, max_len=None):
+        self.examples = []
+        max_len = max_len or STUDENT_CONFIG["context_length"]
+
+        for item in data:
+            prompt_ids = tokenizer.encode(item["prompt"])
+            response_ids = tokenizer.encode(item["response"])
+
+            input_ids = prompt_ids + response_ids + [tokenizer.eos_token_id]
+            labels = [-100] * len(prompt_ids) + response_ids + [tokenizer.eos_token_id]
+
+            input_ids = input_ids[:max_len]
+            labels = labels[:max_len]
+
+            pad_len = max_len - len(input_ids)
+            input_ids += [tokenizer.eos_token_id] * pad_len
+            labels += [-100] * pad_len
+
+            self.examples.append({
+                "input_ids": torch.tensor(input_ids, dtype=torch.long),
+                "labels": torch.tensor(labels, dtype=torch.long),
+            })
+
+    def __len__(self):
+        return len(self.examples)
+
+    def __getitem__(self, idx):
+        return self.examples[idx]

@@ -1,0 +1,77 @@
+RL_CONFIG = {
+    "variant": "{{ .RlVariant }}",
+}
+
+MODEL_CONFIG = {
+    "model_name": "{{ .ModelName }}",
+    "max_seq_length": {{ .MaxSeqLength }},
+    "max_prompt_length": {{ .MaxPromptLength }},
+    "max_completion_length": {{ .MaxCompletionLength }},
+    "load_in_4bit": {{ if .LoadIn4bit }}True{{ else }}False{{ end }},
+{{- if .Dtype}}
+    "dtype": "{{ .Dtype }}",
+{{- else}}
+    "dtype": None,
+{{- end}}
+    "lora_r": {{ .LoraR }},
+    "lora_alpha": {{ .LoraAlpha }},
+    "lora_dropout": {{ .LoraDropout }},
+    "lora_target_modules": {{ .LoraTargetModules | split "," | json }},
+    "use_gradient_checkpointing": "{{ .UseGradientCheckpointing }}",
+    "use_rslora": {{ if .UseRslora }}True{{ else }}False{{ end }},
+    "loftq_config": {{ if .LoftqConfig }}True{{ else }}False{{ end }},
+}
+
+{{- if eq .RlVariant "dpo"}}
+DPO_CONFIG = {
+    "beta": {{ .Beta }},
+    "loss_type": "{{ .LossType }}",
+    "label_smoothing": {{ .LabelSmoothing }},
+}
+{{- else if eq .RlVariant "grpo"}}
+GRPO_CONFIG = {
+    "num_generations": {{ .NumGenerations }},
+    "temperature": {{ .Temperature }},
+    "beta": {{ .Beta }},
+}
+{{- else if eq .RlVariant "orpo"}}
+ORPO_CONFIG = {
+    "beta": {{ .Beta }},
+}
+{{- end }}
+
+DATASET_CONFIG = {
+    "dataset_name": "{{ .DatasetName }}",
+}
+
+TRAINING_CONFIG = {
+    "output_dir": "{{ .OutputDir }}",
+    "per_device_train_batch_size": {{ .PerDeviceTrainBatchSize }},
+    "gradient_accumulation_steps": {{ .GradientAccumulationSteps }},
+    "num_train_epochs": {{ .NumTrainEpochs }},
+    "max_steps": {{ .MaxSteps }},
+    "learning_rate": {{ .LR }},
+    "weight_decay": {{ .WeightDecay }},
+    "warmup_ratio": {{ .WarmupRatio }},
+    "warmup_steps": {{ .WarmupSteps }},
+    "lr_scheduler_type": "{{ .LrSchedulerType }}",
+    "optim": "{{ .Optim }}",
+    "max_grad_norm": {{ .MaxGradNorm }},
+    "bf16": {{ if .Bf16 }}True{{ else }}False{{ end }},
+    "fp16": {{ if .Fp16 }}True{{ else }}False{{ end }},
+    "logging_steps": {{ .LoggingSteps }},
+    "save_steps": {{ .SaveSteps }},
+    "save_total_limit": {{ .SaveTotalLimit }},
+    "seed": {{ .Seed }},
+}
+
+SAVE_CONFIG = {
+    "save_method": "{{ .SaveMethod }}",
+    "push_to_hub": {{ if .PushToHub }}True{{ else }}False{{ end }},
+{{- if .HubModelId}}
+    "hub_model_id": "{{ .HubModelId }}",
+{{- end}}
+{{- if .HubToken}}
+    "hub_token": "{{ .HubToken }}",
+{{- end}}
+}

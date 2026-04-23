@@ -1,0 +1,36 @@
+import json
+import time
+
+
+def collect_teacher_data(prompts, teacher, use_cot=False):
+    """Send prompts to teacher API, collect responses."""
+    data = []
+
+    for i, prompt in enumerate(prompts):
+        if use_cot:
+            full_prompt = f"Solve step by step, show your reasoning:\n\n{prompt}"
+        else:
+            full_prompt = prompt
+
+        try:
+            response = teacher.generate(full_prompt)
+            data.append({"prompt": prompt, "response": response})
+        except Exception as e:
+            print(f"Error on prompt {i}: {e}")
+            time.sleep(2)
+            continue
+
+        if (i + 1) % 100 == 0:
+            print(f"Collected {i + 1}/{len(prompts)}")
+
+    return data
+
+
+def save_data(data, path):
+    with open(path, "w") as f:
+        json.dump(data, f, indent=2)
+
+
+def load_data(path):
+    with open(path, "r") as f:
+        return json.load(f)

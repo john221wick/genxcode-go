@@ -1,0 +1,6 @@
+name: distributed-tp
+description: Tensor Parallelism with pure PyTorch (column/row parallel linear, attention head splitting)
+aliases:
+  - tp
+  - tensor-parallel
+apply_hint: Install deps with `pip install -r requirements.txt`, then run `bash launch.sh`

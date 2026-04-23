@@ -1,0 +1,26 @@
+from datasets import Dataset as HFDataset
+
+from .config import TRAINING_CONFIG
+
+
+def build_dataset(data, tokenizer, max_length=512):
+    """Convert (prompt, response) pairs into HF Dataset for Trainer."""
+    texts = []
+    for item in data:
+        text = f"{item['prompt']}\n{item['response']}{tokenizer.eos_token}"
+        texts.append(text)
+
+    def tokenize_fn(examples):
+        tokenized = tokenizer(
+            examples["text"],
+            truncation=True,
+            max_length=max_length,
+            padding="max_length",
+        )
+        tokenized["labels"] = tokenized["input_ids"].copy()
+        return tokenized
+
+    dataset = HFDataset.from_dict({"text": texts})
+    dataset = dataset.map(tokenize_fn, batched=True, remove_columns=["text"])
+    dataset.set_format("torch")
+    return dataset

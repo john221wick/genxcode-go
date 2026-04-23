@@ -1,0 +1,6 @@
+#!/bin/bash
+# Launch Pipeline Parallel training ({{ .Schedule }}) with {{ .PpSize }} stages
+torchrun \
+    --nproc_per_node={{ .PpSize }} \
+    --master_port=29500 \
+    main.py

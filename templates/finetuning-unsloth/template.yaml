@@ -1,0 +1,6 @@
+name: finetuning-unsloth
+description: SFT fine-tuning with Unsloth (4x faster LoRA, 4-bit quantization)
+aliases:
+  - finetune-unsloth
+  - sft-unsloth
+apply_hint: Install deps with `pip install -r requirements.txt`, then run `python main.py`

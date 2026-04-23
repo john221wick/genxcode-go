@@ -1,0 +1,92 @@
+import torch
+import torch.nn as nn
+import math
+
+from .config import MODEL_CONFIG
+from .moe import MoELayer
+
+
+class RMSNorm(nn.Module):
+    def __init__(self, dim, eps=1e-6):
+        super().__init__()
+        self.weight = nn.Parameter(torch.ones(dim))
+        self.eps = eps
+
+    def forward(self, x):
+        norm = x.float().pow(2).mean(-1, keepdim=True).add(self.eps).rsqrt()
+        return (x.float() * norm).type_as(x) * self.weight
+
+
+class SelfAttention(nn.Module):
+    def __init__(self, hidden_dim, num_heads):
+        super().__init__()
+        self.num_heads = num_heads
+        self.head_dim = hidden_dim // num_heads
+        self.qkv = nn.Linear(hidden_dim, 3 * hidden_dim, bias=False)
+        self.out_proj = nn.Linear(hidden_dim, hidden_dim, bias=False)
+
+    def forward(self, x):
+        B, T, C = x.shape
+        qkv = self.qkv(x).reshape(B, T, 3, self.num_heads, self.head_dim)
+        q, k, v = qkv.unbind(dim=2)
+        q = q.transpose(1, 2)
+        k = k.transpose(1, 2)
+        v = v.transpose(1, 2)
+
+        scale = 1.0 / math.sqrt(self.head_dim)
+        attn = (q @ k.transpose(-2, -1)) * scale
+        causal_mask = torch.triu(torch.ones(T, T, device=x.device, dtype=torch.bool), diagonal=1)
+        attn = attn.masked_fill(causal_mask, float("-inf"))
+        attn = torch.softmax(attn, dim=-1)
+
+        out = (attn @ v).transpose(1, 2).reshape(B, T, C)
+        return self.out_proj(out)
+
+
+class MoETransformerBlock(nn.Module):
+    """Transformer block with MoE FFN instead of dense FFN."""
+
+    def __init__(self, hidden_dim, num_heads, ep_group):
+        super().__init__()
+        self.attn_norm = RMSNorm(hidden_dim)
+        self.attn = SelfAttention(hidden_dim, num_heads)
+        self.ff_norm = RMSNorm(hidden_dim)
+        self.moe = MoELayer(hidden_dim, ep_group)
+
+    def forward(self, x):
+        x = x + self.attn(self.attn_norm(x))
+        moe_out, lb_loss = self.moe(self.ff_norm(x))
+        x = x + moe_out
+        return x, lb_loss
+
+
+class MoETransformer(nn.Module):
+    def __init__(self, ep_group):
+        super().__init__()
+        hidden_dim = MODEL_CONFIG["hidden_dim"]
+        num_layers = MODEL_CONFIG["num_layers"]
+        num_heads = MODEL_CONFIG["num_heads"]
+        vocab_size = MODEL_CONFIG["vocab_size"]
+        seq_len = MODEL_CONFIG["seq_len"]
+
+        self.tok_emb = nn.Embedding(vocab_size, hidden_dim)
+        self.pos_emb = nn.Embedding(seq_len, hidden_dim)
+        self.layers = nn.ModuleList(
+            [MoETransformerBlock(hidden_dim, num_heads, ep_group) for _ in range(num_layers)]
+        )
+        self.norm = RMSNorm(hidden_dim)
+        self.head = nn.Linear(hidden_dim, vocab_size, bias=False)
+
+    def forward(self, input_ids):
+        B, T = input_ids.shape
+        tok = self.tok_emb(input_ids)
+        pos = self.pos_emb(torch.arange(T, device=input_ids.device))
+        x = tok + pos
+
+        total_lb_loss = 0.0
+        for layer in self.layers:
+            x, lb_loss = layer(x)
+            total_lb_loss += lb_loss
+
+        x = self.norm(x)
+        return self.head(x), total_lb_loss

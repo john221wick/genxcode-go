@@ -1,0 +1,169 @@
+"""Pipeline schedules: GPipe (fill-drain) and 1F1B (interleaved).
+
+Both split a mini-batch into micro-batches and pipeline them
+through stages using point-to-point send/recv.
+"""
+
+import torch
+import torch.distributed as dist
+import torch.nn.functional as F
+
+from .config import MODEL_CONFIG, PP_CONFIG
+
+
+def _send_activation(tensor, dst):
+    dist.send(tensor.contiguous(), dst=dst)
+
+
+def _recv_activation(shape, dtype, device, src):
+    tensor = torch.empty(shape, dtype=dtype, device=device)
+    dist.recv(tensor, src=src)
+    return tensor
+
+
+def _send_grad(tensor, dst):
+    dist.send(tensor.contiguous(), dst=dst)
+
+
+def _recv_grad(shape, dtype, device, src):
+    tensor = torch.empty(shape, dtype=dtype, device=device)
+    dist.recv(tensor, src=src)
+    return tensor
+
+
+def gpipe_schedule(stage, micro_batches, labels_list, rank, pp_size, device, dtype):
+    """GPipe: all forwards first, then all backwards.
+
+    Simple but has a large bubble (pp_size - 1 idle slots).
+    """
+    num_mb = len(micro_batches)
+    hidden_dim = MODEL_CONFIG["hidden_dim"]
+    vocab_size = MODEL_CONFIG["vocab_size"]
+    activations = []
+    inputs = []
+    total_loss = 0.0
+
+    # --- Forward pass for all micro-batches ---
+    for i in range(num_mb):
+        if stage.is_first:
+            x = micro_batches[i].to(device)
+        else:
+            seq_len = micro_batches[i].shape[1] if stage.is_first else micro_batches[0].shape[1]
+            batch_sz = micro_batches[i].shape[0]
+            x = _recv_activation(
+                (batch_sz, seq_len, hidden_dim), dtype, device, src=rank - 1
+            )
+            x.requires_grad_(True)
+
+        inputs.append(x)
+
+        with torch.autocast(device_type="cuda", dtype=dtype):
+            out = stage(x)
+
+        if stage.is_last:
+            labels = labels_list[i].to(device)
+            shift_logits = out[:, :-1, :].contiguous()
+            shift_labels = labels[:, 1:].contiguous()
+            loss = F.cross_entropy(
+                shift_logits.view(-1, vocab_size), shift_labels.view(-1), ignore_index=-100
+            )
+            total_loss += loss.item()
+            activations.append((out, loss))
+        else:
+            _send_activation(out, dst=rank + 1)
+            activations.append(out)
+
+    # --- Backward pass for all micro-batches ---
+    for i in reversed(range(num_mb)):
+        if stage.is_last:
+            out, loss = activations[i]
+            loss.backward()
+        else:
+            out = activations[i]
+            grad = _recv_grad(out.shape, dtype, device, src=rank + 1)
+            out.backward(grad)
+
+        if not stage.is_first:
+            _send_grad(inputs[i].grad, dst=rank - 1)
+
+    return total_loss / num_mb if stage.is_last else 0.0
+
+
+def one_f1b_schedule(stage, micro_batches, labels_list, rank, pp_size, device, dtype):
+    """1F1B: interleave forward and backward to reduce bubble.
+
+    Warmup phase: forward only (fill the pipeline).
+    Steady phase: alternate 1 forward + 1 backward.
+    Cooldown phase: backward only (drain the pipeline).
+    """
+    num_mb = len(micro_batches)
+    hidden_dim = MODEL_CONFIG["hidden_dim"]
+    vocab_size = MODEL_CONFIG["vocab_size"]
+
+    warmup_steps = pp_size - rank - 1
+    warmup_steps = min(warmup_steps, num_mb)
+
+    activations = []
+    inputs = []
+    total_loss = 0.0
+    fwd_idx = 0
+    bwd_idx = 0
+
+    def _forward_one(mb_idx):
+        nonlocal fwd_idx
+        if stage.is_first:
+            x = micro_batches[mb_idx].to(device)
+        else:
+            seq_len = micro_batches[0].shape[1]
+            batch_sz = micro_batches[mb_idx].shape[0]
+            x = _recv_activation((batch_sz, seq_len, hidden_dim), dtype, device, src=rank - 1)
+            x.requires_grad_(True)
+
+        inputs.append(x)
+        with torch.autocast(device_type="cuda", dtype=dtype):
+            out = stage(x)
+
+        if stage.is_last:
+            labels = labels_list[mb_idx].to(device)
+            shift_logits = out[:, :-1, :].contiguous()
+            shift_labels = labels[:, 1:].contiguous()
+            loss = F.cross_entropy(
+                shift_logits.view(-1, vocab_size), shift_labels.view(-1), ignore_index=-100
+            )
+            activations.append((out, loss))
+        else:
+            _send_activation(out, dst=rank + 1)
+            activations.append(out)
+        fwd_idx += 1
+
+    def _backward_one():
+        nonlocal bwd_idx, total_loss
+        idx = bwd_idx
+        if stage.is_last:
+            out, loss = activations[idx]
+            total_loss += loss.item()
+            loss.backward()
+        else:
+            out = activations[idx]
+            grad = _recv_grad(out.shape, dtype, device, src=rank + 1)
+            out.backward(grad)
+
+        if not stage.is_first:
+            _send_grad(inputs[idx].grad, dst=rank - 1)
+        bwd_idx += 1
+
+    # Warmup: forward only
+    for _ in range(warmup_steps):
+        _forward_one(fwd_idx)
+
+    # Steady: 1F1B
+    steady_steps = num_mb - warmup_steps
+    for _ in range(steady_steps):
+        _forward_one(fwd_idx)
+        _backward_one()
+
+    # Cooldown: backward only
+    while bwd_idx < num_mb:
+        _backward_one()
+
+    return total_loss / num_mb if stage.is_last else 0.0

@@ -1,0 +1,7 @@
+name: rl-unsloth
+description: RLHF/preference tuning with Unsloth (DPO, GRPO, ORPO — 4x faster)
+aliases:
+  - rl-us
+  - dpo-unsloth
+  - grpo-unsloth
+apply_hint: Install deps with `pip install -r requirements.txt`, then run `python main.py`

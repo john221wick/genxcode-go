@@ -1,0 +1,17 @@
+from .config import CONFIG
+from .pipeline import build_generator
+
+generator = build_generator()
+
+
+def generate_response(prompt=None):
+    prompt = prompt or CONFIG["prompt"]
+    outputs = generator(
+        prompt,
+        max_new_tokens=CONFIG["max_new_tokens"],
+        do_sample=True,
+        temperature=CONFIG["temperature"],
+        top_p=CONFIG["top_p"],
+        return_full_text=False,
+    )
+    return outputs[0]["generated_text"].strip()

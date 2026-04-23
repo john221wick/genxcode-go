@@ -1,0 +1,69 @@
+from transformers import TrainingArguments
+from trl import SFTTrainer, SFTConfig
+
+from .config import MODEL_CONFIG, DATASET_CONFIG, TRAINING_CONFIG, HUB_CONFIG
+from .model import load_model, load_tokenizer
+from .data import load_and_prepare_dataset
+
+
+def train():
+    tokenizer = load_tokenizer()
+    model = load_model()
+    train_dataset, eval_dataset = load_and_prepare_dataset(tokenizer)
+
+    sft_config = SFTConfig(
+        output_dir=TRAINING_CONFIG["output_dir"],
+        per_device_train_batch_size=TRAINING_CONFIG["per_device_train_batch_size"],
+        per_device_eval_batch_size=TRAINING_CONFIG["per_device_eval_batch_size"],
+        gradient_accumulation_steps=TRAINING_CONFIG["gradient_accumulation_steps"],
+        num_train_epochs=TRAINING_CONFIG["num_train_epochs"],
+        max_steps=TRAINING_CONFIG["max_steps"],
+        learning_rate=TRAINING_CONFIG["learning_rate"],
+        weight_decay=TRAINING_CONFIG["weight_decay"],
+        warmup_ratio=TRAINING_CONFIG["warmup_ratio"],
+        warmup_steps=TRAINING_CONFIG["warmup_steps"],
+        lr_scheduler_type=TRAINING_CONFIG["lr_scheduler_type"],
+        optim=TRAINING_CONFIG["optim"],
+        max_grad_norm=TRAINING_CONFIG["max_grad_norm"],
+        bf16=TRAINING_CONFIG["bf16"],
+        fp16=TRAINING_CONFIG["fp16"],
+        logging_steps=TRAINING_CONFIG["logging_steps"],
+        save_steps=TRAINING_CONFIG["save_steps"],
+        save_total_limit=TRAINING_CONFIG["save_total_limit"],
+        eval_steps=TRAINING_CONFIG["eval_steps"],
+        eval_strategy=TRAINING_CONFIG["eval_strategy"],
+        report_to=TRAINING_CONFIG["report_to"],
+        seed=TRAINING_CONFIG["seed"],
+        max_seq_length=MODEL_CONFIG["max_seq_length"],
+        packing=DATASET_CONFIG["packing"],
+        dataset_text_field=DATASET_CONFIG["dataset_text_field"],
+        push_to_hub=HUB_CONFIG["push_to_hub"],
+{{- if .HubModelId}}
+        hub_model_id=HUB_CONFIG["hub_model_id"],
+{{- end}}
+{{- if .HubToken}}
+        hub_token=HUB_CONFIG["hub_token"],
+{{- end}}
+    )
+
+    trainer = SFTTrainer(
+        model=model,
+        args=sft_config,
+        train_dataset=train_dataset,
+        eval_dataset=eval_dataset,
+        processing_class=tokenizer,
+    )
+
+    trainer.train()
+
+    trainer.save_model(TRAINING_CONFIG["output_dir"] + "/final")
+    tokenizer.save_pretrained(TRAINING_CONFIG["output_dir"] + "/final")
+
+{{- if .UseLora}}
+    model.save_pretrained(TRAINING_CONFIG["output_dir"] + "/lora_adapter")
+{{- end}}
+
+    if HUB_CONFIG["push_to_hub"]:
+        trainer.push_to_hub()
+
+    print(f"Training complete. Model saved to {TRAINING_CONFIG['output_dir']}/final")

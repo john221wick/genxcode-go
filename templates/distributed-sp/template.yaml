@@ -1,0 +1,6 @@
+name: distributed-sp
+description: Sequence Parallelism with pure PyTorch (sequence-dim sharding for LayerNorm/dropout, paired with TP)
+aliases:
+  - sp
+  - sequence-parallel
+apply_hint: Install deps with `pip install -r requirements.txt`, then run `bash launch.sh`

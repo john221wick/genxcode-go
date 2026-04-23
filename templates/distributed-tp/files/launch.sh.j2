@@ -1,0 +1,6 @@
+#!/bin/bash
+# Launch Tensor Parallel training with {{ .TpSize }} GPUs
+torchrun \
+    --nproc_per_node={{ .TpSize }} \
+    --master_port=29500 \
+    main.py

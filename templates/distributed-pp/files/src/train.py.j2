@@ -1,0 +1,61 @@
+import torch
+
+from .config import TRAINING_CONFIG, PP_CONFIG
+from .model import PipelineStage
+from .pipeline_schedule import gpipe_schedule, one_f1b_schedule
+from .distributed import setup_distributed, cleanup_distributed, is_main_rank
+from .data import RandomTokenDataset, create_dataloader, split_into_micro_batches
+
+
+def get_precision_dtype():
+    precision = TRAINING_CONFIG["precision"]
+    if precision == "bf16":
+        return torch.bfloat16
+    elif precision == "fp16":
+        return torch.float16
+    return torch.float32
+
+
+def train():
+    rank, local_rank, world_size = setup_distributed()
+    device = torch.device(f"cuda:{local_rank}")
+    pp_size = PP_CONFIG["pp_size"]
+
+    stage = PipelineStage(rank, pp_size).to(device)
+    optimizer = torch.optim.AdamW(stage.parameters(), lr=TRAINING_CONFIG["lr"], weight_decay=0.1)
+
+    dtype = get_precision_dtype()
+    schedule_fn = one_f1b_schedule if PP_CONFIG["schedule"] == "1f1b" else gpipe_schedule
+    num_micro_batches = PP_CONFIG["num_micro_batches"]
+
+    dataset = RandomTokenDataset()
+    loader = create_dataloader(dataset)
+
+    for epoch in range(TRAINING_CONFIG["epochs"]):
+        stage.train()
+        total_loss = 0.0
+        num_batches = 0
+
+        for batch in loader:
+            micro_inputs, micro_labels = split_into_micro_batches(batch, num_micro_batches)
+
+            optimizer.zero_grad()
+            loss = schedule_fn(
+                stage, micro_inputs, micro_labels,
+                rank, pp_size, device, dtype,
+            )
+            torch.nn.utils.clip_grad_norm_(stage.parameters(), TRAINING_CONFIG["max_grad_norm"])
+            optimizer.step()
+
+            total_loss += loss
+            num_batches += 1
+
+        if stage.is_last:
+            avg_loss = total_loss / max(num_batches, 1)
+            print(f"[PP-{{ .Schedule }}] Epoch {epoch + 1}/{TRAINING_CONFIG['epochs']} | Loss: {avg_loss:.4f}")
+
+    if is_main_rank():
+        torch.save(stage.state_dict(), f"model_pp_stage{rank}.pt")
+        print(f"Saved model_pp_stage{rank}.pt")
+
+    cleanup_distributed()

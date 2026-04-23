@@ -1,0 +1,116 @@
+"""Tensor-parallel transformer.
+
+Attention: QKV is column-parallel (split heads across ranks),
+           output projection is row-parallel (all-reduce).
+FFN: gate/up are column-parallel, down is row-parallel.
+"""
+
+import torch
+import torch.nn as nn
+import math
+
+from .config import MODEL_CONFIG
+from .parallel_layers import ColumnParallelLinear, RowParallelLinear, gather_from_tp_group
+
+
+class RMSNorm(nn.Module):
+    def __init__(self, dim, eps=1e-6):
+        super().__init__()
+        self.weight = nn.Parameter(torch.ones(dim))
+        self.eps = eps
+
+    def forward(self, x):
+        norm = x.float().pow(2).mean(-1, keepdim=True).add(self.eps).rsqrt()
+        return (x.float() * norm).type_as(x) * self.weight
+
+
+class TPSelfAttention(nn.Module):
+    """Attention with heads split across TP ranks."""
+
+    def __init__(self, hidden_dim, num_heads, tp_group):
+        super().__init__()
+        self.tp_group = tp_group
+        self.tp_size = torch.distributed.get_world_size(tp_group)
+        self.num_heads = num_heads
+        self.heads_per_rank = num_heads // self.tp_size
+        self.head_dim = hidden_dim // num_heads
+
+        local_heads_dim = self.heads_per_rank * self.head_dim
+        self.qkv = ColumnParallelLinear(hidden_dim, 3 * hidden_dim, tp_group)
+        self.out_proj = RowParallelLinear(hidden_dim, hidden_dim, tp_group)
+
+    def forward(self, x):
+        B, T, C = x.shape
+        qkv = self.qkv(x)
+        qkv = qkv.reshape(B, T, 3, self.heads_per_rank, self.head_dim)
+        q, k, v = qkv.unbind(dim=2)
+        q = q.transpose(1, 2)
+        k = k.transpose(1, 2)
+        v = v.transpose(1, 2)
+
+        scale = 1.0 / math.sqrt(self.head_dim)
+        attn = (q @ k.transpose(-2, -1)) * scale
+        causal_mask = torch.triu(
+            torch.ones(T, T, device=x.device, dtype=torch.bool), diagonal=1
+        )
+        attn = attn.masked_fill(causal_mask, float("-inf"))
+        attn = torch.softmax(attn, dim=-1)
+
+        out = (attn @ v).transpose(1, 2).reshape(B, T, self.heads_per_rank * self.head_dim)
+        return self.out_proj(out)
+
+
+class TPFeedForward(nn.Module):
+    """SwiGLU FFN with gate/up column-parallel, down row-parallel."""
+
+    def __init__(self, hidden_dim, tp_group):
+        super().__init__()
+        intermediate = 4 * hidden_dim
+        self.gate_proj = ColumnParallelLinear(hidden_dim, intermediate, tp_group)
+        self.up_proj = ColumnParallelLinear(hidden_dim, intermediate, tp_group)
+        self.down_proj = RowParallelLinear(intermediate, hidden_dim, tp_group)
+
+    def forward(self, x):
+        return self.down_proj(nn.functional.silu(self.gate_proj(x)) * self.up_proj(x))
+
+
+class TPTransformerBlock(nn.Module):
+    def __init__(self, hidden_dim, num_heads, tp_group):
+        super().__init__()
+        self.attn_norm = RMSNorm(hidden_dim)
+        self.attn = TPSelfAttention(hidden_dim, num_heads, tp_group)
+        self.ff_norm = RMSNorm(hidden_dim)
+        self.ff = TPFeedForward(hidden_dim, tp_group)
+
+    def forward(self, x):
+        x = x + self.attn(self.attn_norm(x))
+        x = x + self.ff(self.ff_norm(x))
+        return x
+
+
+class TPTransformer(nn.Module):
+    def __init__(self, tp_group):
+        super().__init__()
+        hidden_dim = MODEL_CONFIG["hidden_dim"]
+        num_layers = MODEL_CONFIG["num_layers"]
+        num_heads = MODEL_CONFIG["num_heads"]
+        vocab_size = MODEL_CONFIG["vocab_size"]
+        seq_len = MODEL_CONFIG["seq_len"]
+
+        self.tok_emb = nn.Embedding(vocab_size, hidden_dim)
+        self.pos_emb = nn.Embedding(seq_len, hidden_dim)
+        self.layers = nn.ModuleList(
+            [TPTransformerBlock(hidden_dim, num_heads, tp_group) for _ in range(num_layers)]
+        )
+        self.norm = RMSNorm(hidden_dim)
+        self.head = nn.Linear(hidden_dim, vocab_size, bias=False)
+
+    def forward(self, input_ids):
+        B, T = input_ids.shape
+        tok = self.tok_emb(input_ids)
+        pos = self.pos_emb(torch.arange(T, device=input_ids.device))
+        x = tok + pos
+        for layer in self.layers:
+            x = layer(x)
+        x = self.norm(x)
+        return self.head(x)

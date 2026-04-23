@@ -1,0 +1,89 @@
+import torch
+
+from src.config import TRAINING_CONFIG
+from src.student import load_student
+from src.teacher_api import TeacherAPI
+from src.data_collection import collect_teacher_data, save_data
+from src.train import train_student
+from src.generate import generate_text
+
+SAMPLE_PROMPTS = [
+    "Explain what a hash table is.",
+    "What causes rain?",
+    "Write a Python function to reverse a linked list.",
+    "What is the difference between a stack and a queue?",
+    "Explain gradient descent in simple terms.",
+]
+
+
+def main():
+    model, tokenizer = load_student()
+    teacher = TeacherAPI()
+
+    print(f"Teacher: {{ .TeacherProvider }}/{{ .TeacherModel }}")
+    print(f"Student: {{ .StudentModel }}")
+    print(f"Technique: {{ .Technique }}")
+{{ if eq .Technique "sft" }}
+
+    # ── Response-Based Distillation (SFT) ──
+    print("\n--- Collecting teacher data ---")
+    teacher_data = collect_teacher_data(SAMPLE_PROMPTS, teacher, use_cot=False)
+    save_data(teacher_data, "teacher_responses.json")
+    print(f"Collected {len(teacher_data)} examples")
+
+    print("\n--- Training student (SFT with HF Trainer) ---")
+    model = train_student(model, teacher_data, tokenizer)
+{{ else if eq .Technique "cot" }}
+
+    # ── Chain-of-Thought Distillation ──
+    print("\n--- Collecting teacher data (chain-of-thought) ---")
+    teacher_data = collect_teacher_data(SAMPLE_PROMPTS, teacher, use_cot=True)
+    save_data(teacher_data, "teacher_cot_responses.json")
+    print(f"Collected {len(teacher_data)} CoT examples")
+
+    print("\n--- Training student on reasoning traces ---")
+    model = train_student(model, teacher_data, tokenizer)
+{{ else if eq .Technique "rejection_sampling" }}
+
+    # ── Rejection Sampling ──
+    print("\n--- Phase 1: Initial SFT ---")
+    teacher_data = collect_teacher_data(SAMPLE_PROMPTS, teacher, use_cot=False)
+    save_data(teacher_data, "teacher_responses.json")
+    model = train_student(model, teacher_data, tokenizer)
+
+    print("\n--- Phase 2: Rejection sampling ---")
+    from src.rejection_sampling import rejection_sampling
+    refined_data = rejection_sampling(model, SAMPLE_PROMPTS, teacher, tokenizer)
+    save_data(refined_data, "refined_responses.json")
+    print(f"Refined {len(refined_data)} examples")
+
+    print("\n--- Phase 2: Fine-tuning on best responses ---")
+    model = train_student(model, refined_data, tokenizer)
+{{ else if eq .Technique "feedback_loop" }}
+
+    # ── Feedback Loop ──
+    print("\n--- Phase 1: Initial SFT ---")
+    teacher_data = collect_teacher_data(SAMPLE_PROMPTS, teacher, use_cot=False)
+    save_data(teacher_data, "teacher_responses.json")
+    model = train_student(model, teacher_data, tokenizer)
+
+    print("\n--- Phase 2: Feedback loop ({{ .RlVariant }}) ---")
+    from src.feedback_loop import feedback_loop_train
+    model = feedback_loop_train(model, SAMPLE_PROMPTS, teacher, tokenizer)
+{{ end }}
+
+    # Save
+    model.save_pretrained(f"./{TRAINING_CONFIG['project_name']}_final")
+    tokenizer.save_pretrained(f"./{TRAINING_CONFIG['project_name']}_final")
+    print(f"\nModel saved to ./{TRAINING_CONFIG['project_name']}_final/")
+
+    # Test
+    print("\n--- Test Generation ---")
+    test_prompt = "Explain what a neural network is."
+    output = generate_text(model, tokenizer, test_prompt, max_new_tokens=128)
+    print(f"Prompt: {test_prompt}")
+    print(f"Student: {output}")
+
+
+if __name__ == "__main__":
+    main()

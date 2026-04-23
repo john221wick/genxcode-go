@@ -1,0 +1,55 @@
+import os
+import torch
+import torch.distributed as dist
+
+from .config import DISTRIBUTED_CONFIG
+
+
+def setup_distributed():
+    """Initialize the distributed process group."""
+    rank = int(os.environ.get("RANK", 0))
+    local_rank = int(os.environ.get("LOCAL_RANK", 0))
+    world_size = int(os.environ.get("WORLD_SIZE", DISTRIBUTED_CONFIG["world_size"]))
+
+    dist.init_process_group(
+        backend=DISTRIBUTED_CONFIG["backend"],
+        rank=rank,
+        world_size=world_size,
+    )
+
+    torch.cuda.set_device(local_rank)
+    return rank, local_rank, world_size
+
+
+def cleanup_distributed():
+    """Destroy the distributed process group."""
+    if dist.is_initialized():
+        dist.destroy_process_group()
+
+
+def all_reduce_gradients(model):
+    """Manually all-reduce gradients across all ranks.
+
+    This is the core DP primitive: after each backward pass,
+    every rank averages its gradients with all other ranks so
+    the optimizer step is identical everywhere.
+    """
+    world_size = dist.get_world_size()
+    for param in model.parameters():
+        if param.grad is not None:
+            dist.all_reduce(param.grad, op=dist.ReduceOp.SUM)
+            param.grad.div_(world_size)
+
+
+def broadcast_parameters(model, src=0):
+    """Broadcast model parameters from src rank to all others.
+
+    Called once at init to ensure every replica starts identical.
+    """
+    for param in model.parameters():
+        dist.broadcast(param.data, src=src)
+
+
+def is_main_rank():
+    """Check if current process is rank 0."""
+    return not dist.is_initialized() or dist.get_rank() == 0

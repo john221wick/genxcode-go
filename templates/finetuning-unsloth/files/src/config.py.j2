@@ -1,0 +1,61 @@
+MODEL_CONFIG = {
+    "model_name": "{{ .ModelName }}",
+    "max_seq_length": {{ .MaxSeqLength }},
+    "load_in_4bit": {{ if .LoadIn4bit }}True{{ else }}False{{ end }},
+{{ if .Dtype }}
+    "dtype": "{{ .Dtype }}",
+{{ else }}
+    "dtype": None,
+{{ end }}
+    "lora_r": {{ .LoraR }},
+    "lora_alpha": {{ .LoraAlpha }},
+    "lora_dropout": {{ .LoraDropout }},
+    "lora_target_modules": {{ json .LoraTargetModules }},
+    "use_gradient_checkpointing": "{{ .UseGradientCheckpointing }}",
+    "use_rslora": {{ if .UseRslora }}True{{ else }}False{{ end }},
+    "loftq_config": {{ if .LoftqConfig }}True{{ else }}False{{ end }},
+}
+
+DATASET_CONFIG = {
+    "dataset_name": "{{ .DatasetName }}",
+    "dataset_text_field": "{{ .DatasetTextField }}",
+    "packing": {{ if .Packing }}True{{ else }}False{{ end }},
+{{ if ne .ChatTemplate "none" }}
+    "chat_template": "{{ .ChatTemplate }}",
+{{ end }}
+{{ if .SystemPrompt }}
+    "system_prompt": "{{ .SystemPrompt }}",
+{{ end }}
+}
+
+TRAINING_CONFIG = {
+    "output_dir": "{{ .OutputDir }}",
+    "per_device_train_batch_size": {{ .PerDeviceTrainBatchSize }},
+    "gradient_accumulation_steps": {{ .GradientAccumulationSteps }},
+    "num_train_epochs": {{ .NumTrainEpochs }},
+    "max_steps": {{ .MaxSteps }},
+    "learning_rate": {{ .Lr }},
+    "weight_decay": {{ .WeightDecay }},
+    "warmup_steps": {{ .WarmupSteps }},
+    "warmup_ratio": {{ .WarmupRatio }},
+    "lr_scheduler_type": "{{ .LrSchedulerType }}",
+    "optim": "{{ .Optim }}",
+    "max_grad_norm": {{ .MaxGradNorm }},
+    "bf16": {{ if .Bf16 }}True{{ else }}False{{ end }},
+    "fp16": {{ if .Fp16 }}True{{ else }}False{{ end }},
+    "logging_steps": {{ .LoggingSteps }},
+    "save_steps": {{ .SaveSteps }},
+    "save_total_limit": {{ .SaveTotalLimit }},
+    "seed": {{ .Seed }},
+}
+
+SAVE_CONFIG = {
+    "save_method": "{{ .SaveMethod }}",
+    "push_to_hub": {{ if .PushToHub }}True{{ else }}False{{ end }},
+{{ if .HubModelId }}
+    "hub_model_id": "{{ .HubModelId }}",
+{{ end }}
+{{ if .HubToken }}
+    "hub_token": "{{ .HubToken }}",
+{{ end }}
+}

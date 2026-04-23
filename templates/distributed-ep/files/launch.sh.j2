@@ -1,0 +1,6 @@
+#!/bin/bash
+# Launch Expert Parallel (MoE) training with {{ .EpSize }} GPUs
+torchrun \
+    --nproc_per_node={{ .EpSize }} \
+    --master_port=29500 \
+    main.py

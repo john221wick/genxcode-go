@@ -1,0 +1,6 @@
+name: distributed-pp
+description: Pipeline Parallelism with pure PyTorch (GPipe and 1F1B micro-batch schedules)
+aliases:
+  - pp
+  - pipeline-parallel
+apply_hint: Install deps with `pip install -r requirements.txt`, then run `bash launch.sh`

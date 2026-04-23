@@ -1,0 +1,6 @@
+name: finetuning-huggingface
+description: SFT fine-tuning with HuggingFace TRL SFTTrainer, LoRA/QLoRA support
+aliases:
+  - finetune-hf
+  - sft-hf
+apply_hint: Install deps with `pip install -r requirements.txt`, set your HF token, then run `python main.py`

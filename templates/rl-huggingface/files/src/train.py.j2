@@ -1,0 +1,241 @@
+{{ if eq .RlVariant "dpo" }}
+from trl import DPOTrainer, DPOConfig
+{{ else if eq .RlVariant "grpo" }}
+from trl import GRPOTrainer, GRPOConfig
+{{ else if eq .RlVariant "ppo" }}
+from trl import PPOTrainer, PPOConfig
+{{ else if eq .RlVariant "orpo" }}
+from trl import ORPOTrainer, ORPOConfig
+{{ else if eq .RlVariant "kto" }}
+from trl import KTOTrainer, KTOConfig
+{{ end }}
+
+from .config import MODEL_CONFIG, TRAINING_CONFIG, HUB_CONFIG
+{{ if eq .RlVariant "dpo" }}
+from .config import DPO_CONFIG
+{{ else if eq .RlVariant "grpo" }}
+from .config import GRPO_CONFIG
+{{ else if eq .RlVariant "ppo" }}
+from .config import PPO_CONFIG
+{{ else if eq .RlVariant "orpo" }}
+from .config import ORPO_CONFIG
+{{ else if eq .RlVariant "kto" }}
+from .config import KTO_CONFIG
+{{ end }}
+from .model import load_model, load_tokenizer
+{{ if or (eq .RlVariant "dpo") (eq .RlVariant "kto") }}
+from .model import load_ref_model
+{{ end }}
+{{ if eq .RlVariant "ppo" }}
+from .model import load_reward_model
+{{ end }}
+from .data import load_preference_dataset
+
+
+def train():
+    tokenizer = load_tokenizer()
+    model = load_model()
+    train_dataset, eval_dataset = load_preference_dataset()
+
+{{ if eq .RlVariant "dpo" }}
+    ref_model = load_ref_model()
+
+    training_args = DPOConfig(
+        output_dir=TRAINING_CONFIG["output_dir"],
+        per_device_train_batch_size=TRAINING_CONFIG["per_device_train_batch_size"],
+        per_device_eval_batch_size=TRAINING_CONFIG["per_device_eval_batch_size"],
+        gradient_accumulation_steps=TRAINING_CONFIG["gradient_accumulation_steps"],
+        num_train_epochs=TRAINING_CONFIG["num_train_epochs"],
+        max_steps=TRAINING_CONFIG["max_steps"],
+        learning_rate=TRAINING_CONFIG["learning_rate"],
+        weight_decay=TRAINING_CONFIG["weight_decay"],
+        warmup_ratio=TRAINING_CONFIG["warmup_ratio"],
+        warmup_steps=TRAINING_CONFIG["warmup_steps"],
+        lr_scheduler_type=TRAINING_CONFIG["lr_scheduler_type"],
+        optim=TRAINING_CONFIG["optim"],
+        max_grad_norm=TRAINING_CONFIG["max_grad_norm"],
+        bf16=TRAINING_CONFIG["bf16"],
+        fp16=TRAINING_CONFIG["fp16"],
+        logging_steps=TRAINING_CONFIG["logging_steps"],
+        save_steps=TRAINING_CONFIG["save_steps"],
+        save_total_limit=TRAINING_CONFIG["save_total_limit"],
+        eval_steps=TRAINING_CONFIG["eval_steps"],
+        eval_strategy=TRAINING_CONFIG["eval_strategy"],
+        report_to=TRAINING_CONFIG["report_to"],
+        seed=TRAINING_CONFIG["seed"],
+        beta=DPO_CONFIG["beta"],
+        loss_type=DPO_CONFIG["loss_type"],
+        label_smoothing=DPO_CONFIG["label_smoothing"],
+        max_length=MODEL_CONFIG["max_seq_length"],
+        max_prompt_length=MODEL_CONFIG["max_prompt_length"],
+    )
+
+    trainer = DPOTrainer(
+        model=model,
+        ref_model=ref_model,
+        args=training_args,
+        train_dataset=train_dataset,
+        eval_dataset=eval_dataset,
+        processing_class=tokenizer,
+    )
+
+{{ else if eq .RlVariant "grpo" }}
+    training_args = GRPOConfig(
+        output_dir=TRAINING_CONFIG["output_dir"],
+        per_device_train_batch_size=TRAINING_CONFIG["per_device_train_batch_size"],
+        per_device_eval_batch_size=TRAINING_CONFIG["per_device_eval_batch_size"],
+        gradient_accumulation_steps=TRAINING_CONFIG["gradient_accumulation_steps"],
+        num_train_epochs=TRAINING_CONFIG["num_train_epochs"],
+        max_steps=TRAINING_CONFIG["max_steps"],
+        learning_rate=TRAINING_CONFIG["learning_rate"],
+        weight_decay=TRAINING_CONFIG["weight_decay"],
+        warmup_ratio=TRAINING_CONFIG["warmup_ratio"],
+        warmup_steps=TRAINING_CONFIG["warmup_steps"],
+        lr_scheduler_type=TRAINING_CONFIG["lr_scheduler_type"],
+        optim=TRAINING_CONFIG["optim"],
+        max_grad_norm=TRAINING_CONFIG["max_grad_norm"],
+        bf16=TRAINING_CONFIG["bf16"],
+        fp16=TRAINING_CONFIG["fp16"],
+        logging_steps=TRAINING_CONFIG["logging_steps"],
+        save_steps=TRAINING_CONFIG["save_steps"],
+        save_total_limit=TRAINING_CONFIG["save_total_limit"],
+        report_to=TRAINING_CONFIG["report_to"],
+        seed=TRAINING_CONFIG["seed"],
+        num_generations=GRPO_CONFIG["num_generations"],
+        temperature=GRPO_CONFIG["temperature"],
+        beta=GRPO_CONFIG["beta"],
+        max_completion_length=MODEL_CONFIG["max_completion_length"],
+        max_prompt_length=MODEL_CONFIG["max_prompt_length"],
+    )
+
+    def reward_fn(completions, **kwargs):
+        """Placeholder reward function — replace with your own."""
+        return [1.0 if len(c) > 10 else 0.0 for c in completions]
+
+    trainer = GRPOTrainer(
+        model=model,
+        args=training_args,
+        train_dataset=train_dataset,
+        eval_dataset=eval_dataset,
+        processing_class=tokenizer,
+        reward_funcs=reward_fn,
+    )
+
+{{ else if eq .RlVariant "ppo" }}
+    reward_model = load_reward_model()
+
+    training_args = PPOConfig(
+        output_dir=TRAINING_CONFIG["output_dir"],
+        per_device_train_batch_size=TRAINING_CONFIG["per_device_train_batch_size"],
+        gradient_accumulation_steps=TRAINING_CONFIG["gradient_accumulation_steps"],
+        num_train_epochs=TRAINING_CONFIG["num_train_epochs"],
+        learning_rate=TRAINING_CONFIG["learning_rate"],
+        max_grad_norm=TRAINING_CONFIG["max_grad_norm"],
+        bf16=TRAINING_CONFIG["bf16"],
+        logging_steps=TRAINING_CONFIG["logging_steps"],
+        save_steps=TRAINING_CONFIG["save_steps"],
+        report_to=TRAINING_CONFIG["report_to"],
+        seed=TRAINING_CONFIG["seed"],
+    )
+
+    trainer = PPOTrainer(
+        model=model,
+        args=training_args,
+        processing_class=tokenizer,
+        reward_model=reward_model,
+        train_dataset=train_dataset,
+    )
+
+{{ else if eq .RlVariant "orpo" }}
+    training_args = ORPOConfig(
+        output_dir=TRAINING_CONFIG["output_dir"],
+        per_device_train_batch_size=TRAINING_CONFIG["per_device_train_batch_size"],
+        per_device_eval_batch_size=TRAINING_CONFIG["per_device_eval_batch_size"],
+        gradient_accumulation_steps=TRAINING_CONFIG["gradient_accumulation_steps"],
+        num_train_epochs=TRAINING_CONFIG["num_train_epochs"],
+        max_steps=TRAINING_CONFIG["max_steps"],
+        learning_rate=TRAINING_CONFIG["learning_rate"],
+        weight_decay=TRAINING_CONFIG["weight_decay"],
+        warmup_ratio=TRAINING_CONFIG["warmup_ratio"],
+        warmup_steps=TRAINING_CONFIG["warmup_steps"],
+        lr_scheduler_type=TRAINING_CONFIG["lr_scheduler_type"],
+        optim=TRAINING_CONFIG["optim"],
+        max_grad_norm=TRAINING_CONFIG["max_grad_norm"],
+        bf16=TRAINING_CONFIG["bf16"],
+        fp16=TRAINING_CONFIG["fp16"],
+        logging_steps=TRAINING_CONFIG["logging_steps"],
+        save_steps=TRAINING_CONFIG["save_steps"],
+        save_total_limit=TRAINING_CONFIG["save_total_limit"],
+        eval_steps=TRAINING_CONFIG["eval_steps"],
+        eval_strategy=TRAINING_CONFIG["eval_strategy"],
+        report_to=TRAINING_CONFIG["report_to"],
+        seed=TRAINING_CONFIG["seed"],
+        beta=ORPO_CONFIG["beta"],
+        max_length=MODEL_CONFIG["max_seq_length"],
+        max_prompt_length=MODEL_CONFIG["max_prompt_length"],
+    )
+
+    trainer = ORPOTrainer(
+        model=model,
+        args=training_args,
+        train_dataset=train_dataset,
+        eval_dataset=eval_dataset,
+        processing_class=tokenizer,
+    )
+
+{{ else if eq .RlVariant "kto" }}
+    ref_model = load_ref_model()
+
+    training_args = KTOConfig(
+        output_dir=TRAINING_CONFIG["output_dir"],
+        per_device_train_batch_size=TRAINING_CONFIG["per_device_train_batch_size"],
+        per_device_eval_batch_size=TRAINING_CONFIG["per_device_eval_batch_size"],
+        gradient_accumulation_steps=TRAINING_CONFIG["gradient_accumulation_steps"],
+        num_train_epochs=TRAINING_CONFIG["num_train_epochs"],
+        max_steps=TRAINING_CONFIG["max_steps"],
+        learning_rate=TRAINING_CONFIG["learning_rate"],
+        weight_decay=TRAINING_CONFIG["weight_decay"],
+        warmup_ratio=TRAINING_CONFIG["warmup_ratio"],
+        warmup_steps=TRAINING_CONFIG["warmup_steps"],
+        lr_scheduler_type=TRAINING_CONFIG["lr_scheduler_type"],
+        optim=TRAINING_CONFIG["optim"],
+        max_grad_norm=TRAINING_CONFIG["max_grad_norm"],
+        bf16=TRAINING_CONFIG["bf16"],
+        fp16=TRAINING_CONFIG["fp16"],
+        logging_steps=TRAINING_CONFIG["logging_steps"],
+        save_steps=TRAINING_CONFIG["save_steps"],
+        save_total_limit=TRAINING_CONFIG["save_total_limit"],
+        eval_steps=TRAINING_CONFIG["eval_steps"],
+        eval_strategy=TRAINING_CONFIG["eval_strategy"],
+        report_to=TRAINING_CONFIG["report_to"],
+        seed=TRAINING_CONFIG["seed"],
+        beta=KTO_CONFIG["beta"],
+        desirable_weight=KTO_CONFIG["desirable_weight"],
+        undesirable_weight=KTO_CONFIG["undesirable_weight"],
+        max_length=MODEL_CONFIG["max_seq_length"],
+        max_prompt_length=MODEL_CONFIG["max_prompt_length"],
+    )
+
+    trainer = KTOTrainer(
+        model=model,
+        ref_model=ref_model,
+        args=training_args,
+        train_dataset=train_dataset,
+        eval_dataset=eval_dataset,
+        processing_class=tokenizer,
+    )
+{{ end }}
+
+    trainer.train()
+
+    trainer.save_model(TRAINING_CONFIG["output_dir"] + "/final")
+    tokenizer.save_pretrained(TRAINING_CONFIG["output_dir"] + "/final")
+
+{{ if .UseLora }}
+    model.save_pretrained(TRAINING_CONFIG["output_dir"] + "/lora_adapter")
+{{ end }}
+
+    if HUB_CONFIG["push_to_hub"]:
+        trainer.push_to_hub()
+
+    print(f"{{ .RlVariant | upper }} training complete. Model saved to {TRAINING_CONFIG['output_dir']}/final")

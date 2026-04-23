@@ -1,0 +1,6 @@
+name: distillation-pytorch
+description: API-based knowledge distillation with PyTorch student built from scratch
+aliases:
+  - distill-pytorch
+  - distill-pt
+apply_hint: Install deps with `pip install -r requirements.txt`, then run `python main.py`

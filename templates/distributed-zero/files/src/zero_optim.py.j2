@@ -1,0 +1,105 @@
+"""ZeRO optimizer wrapper — stage {{ .ZeroStage }}.
+
+Stage 1: Partition optimizer states across ranks.
+Stage 2: Also partition gradients (reduce-scatter instead of all-reduce).
+Stage 3: Also partition parameters (all-gather before forward/backward).
+"""
+
+import torch
+import torch.distributed as dist
+
+
+class ZeROOptimizer:
+    """Pure-PyTorch ZeRO optimizer wrapper.
+
+    Wraps a base optimizer and partitions state across ranks
+    according to the configured ZeRO stage.
+    """
+
+    def __init__(self, params, base_optimizer_cls, stage, **optimizer_kwargs):
+        self.stage = stage
+        self.rank = dist.get_rank()
+        self.world_size = dist.get_world_size()
+
+        self.all_params = list(params)
+        self.param_groups_flat = self._flatten_params()
+
+        if self.stage >= 1:
+            self.local_params, self.param_partition_map = self._partition_params()
+        else:
+            self.local_params = self.all_params
+            self.param_partition_map = {id(p): self.rank for p in self.all_params}
+
+        self.optimizer = base_optimizer_cls(
+            self.local_params if self.stage >= 1 else self.all_params,
+            **optimizer_kwargs,
+        )
+
+    def _flatten_params(self):
+        return [(i, p) for i, p in enumerate(self.all_params) if p.requires_grad]
+
+    def _partition_params(self):
+        """Assign each parameter to a rank (round-robin)."""
+        local = []
+        partition_map = {}
+        for i, p in self.param_groups_flat:
+            owner = i % self.world_size
+            partition_map[id(p)] = owner
+            if owner == self.rank:
+                local.append(p)
+        return local, partition_map
+
+{{ if ge .ZeroStage 2 }}
+    def reduce_gradients(self):
+        """Stage 2+: reduce-scatter gradients so each rank only holds its partition."""
+        for i, p in self.param_groups_flat:
+            if p.grad is None:
+                continue
+            owner = self.param_partition_map[id(p)]
+            dist.reduce(p.grad, dst=owner, op=dist.ReduceOp.SUM)
+            if self.rank == owner:
+                p.grad.div_(self.world_size)
+            else:
+                p.grad = None
+{{ else }}
+    def reduce_gradients(self):
+        """Stage 1: all-reduce gradients (every rank keeps full gradients)."""
+        for _, p in self.param_groups_flat:
+            if p.grad is not None:
+                dist.all_reduce(p.grad, op=dist.ReduceOp.SUM)
+                p.grad.div_(self.world_size)
+{{ end }}
+
+{{ if ge .ZeroStage 3 }}
+    def gather_params(self):
+        """Stage 3: all-gather parameters before forward pass."""
+        for i, p in self.param_groups_flat:
+            owner = self.param_partition_map[id(p)]
+            dist.broadcast(p.data, src=owner)
+
+    def release_params(self):
+        """Stage 3: free non-local parameters after forward/backward."""
+        for i, p in self.param_groups_flat:
+            owner = self.param_partition_map[id(p)]
+            if owner != self.rank:
+                p.data = torch.zeros(1, device=p.device, dtype=p.dtype)
+{{ end }}
+
+    def step(self):
+        """Run optimizer step on local partition only."""
+        self.optimizer.step()
+
+{{ if ge .ZeroStage 3 }}
+    def broadcast_params(self):
+        """Stage 3: broadcast updated params from owners after step."""
+        self.gather_params()
+{{ else }}
+    def broadcast_params(self):
+        """Broadcast updated params from each owner rank."""
+        for i, p in self.param_groups_flat:
+            owner = self.param_partition_map[id(p)]
+            dist.broadcast(p.data, src=owner)
+{{ end }}
+
+    def zero_grad(self):
+        self.optimizer.zero_grad()

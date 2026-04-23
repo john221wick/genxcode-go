@@ -1,0 +1,167 @@
+{{- if eq .RlVariant "dpo"}}
+from trl import DPOTrainer, DPOConfig
+{{- else if eq .RlVariant "grpo"}}
+from trl import GRPOTrainer, GRPOConfig
+{{- else if eq .RlVariant "orpo"}}
+from trl import ORPOTrainer, ORPOConfig
+{{- end}}
+from unsloth import FastLanguageModel
+
+from .config import MODEL_CONFIG, TRAINING_CONFIG, SAVE_CONFIG
+{{- if eq .RlVariant "dpo"}}
+from .config import DPO_CONFIG
+{{- else if eq .RlVariant "grpo"}}
+from .config import GRPO_CONFIG
+{{- else if eq .RlVariant "orpo"}}
+from .config import ORPO_CONFIG
+{{- end}}
+from .model import load_model_and_tokenizer
+from .data import load_preference_dataset
+
+
+def train():
+    model, tokenizer = load_model_and_tokenizer()
+    train_dataset, eval_dataset = load_preference_dataset()
+
+{{- if eq .RlVariant "dpo"}}
+    training_args = DPOConfig(
+        output_dir=TRAINING_CONFIG["output_dir"],
+        per_device_train_batch_size=TRAINING_CONFIG["per_device_train_batch_size"],
+        gradient_accumulation_steps=TRAINING_CONFIG["gradient_accumulation_steps"],
+        num_train_epochs=TRAINING_CONFIG["num_train_epochs"],
+        max_steps=TRAINING_CONFIG["max_steps"],
+        learning_rate=TRAINING_CONFIG["learning_rate"],
+        weight_decay=TRAINING_CONFIG["weight_decay"],
+        warmup_ratio=TRAINING_CONFIG["warmup_ratio"],
+        warmup_steps=TRAINING_CONFIG["warmup_steps"],
+        lr_scheduler_type=TRAINING_CONFIG["lr_scheduler_type"],
+        optim=TRAINING_CONFIG["optim"],
+        max_grad_norm=TRAINING_CONFIG["max_grad_norm"],
+        bf16=TRAINING_CONFIG["bf16"],
+        fp16=TRAINING_CONFIG["fp16"],
+        logging_steps=TRAINING_CONFIG["logging_steps"],
+        save_steps=TRAINING_CONFIG["save_steps"],
+        save_total_limit=TRAINING_CONFIG["save_total_limit"],
+        seed=TRAINING_CONFIG["seed"],
+        beta=DPO_CONFIG["beta"],
+        loss_type=DPO_CONFIG["loss_type"],
+        label_smoothing=DPO_CONFIG["label_smoothing"],
+        max_length=MODEL_CONFIG["max_seq_length"],
+        max_prompt_length=MODEL_CONFIG["max_prompt_length"],
+    )
+
+    trainer = DPOTrainer(
+        model=model,
+        ref_model=None,
+        args=training_args,
+        train_dataset=train_dataset,
+        eval_dataset=eval_dataset,
+        processing_class=tokenizer,
+    )
+
+{{- else if eq .RlVariant "grpo"}}
+    training_args = GRPOConfig(
+        output_dir=TRAINING_CONFIG["output_dir"],
+        per_device_train_batch_size=TRAINING_CONFIG["per_device_train_batch_size"],
+        gradient_accumulation_steps=TRAINING_CONFIG["gradient_accumulation_steps"],
+        num_train_epochs=TRAINING_CONFIG["num_train_epochs"],
+        max_steps=TRAINING_CONFIG["max_steps"],
+        learning_rate=TRAINING_CONFIG["learning_rate"],
+        weight_decay=TRAINING_CONFIG["weight_decay"],
+        warmup_ratio=TRAINING_CONFIG["warmup_ratio"],
+        warmup_steps=TRAINING_CONFIG["warmup_steps"],
+        lr_scheduler_type=TRAINING_CONFIG["lr_scheduler_type"],
+        optim=TRAINING_CONFIG["optim"],
+        max_grad_norm=TRAINING_CONFIG["max_grad_norm"],
+        bf16=TRAINING_CONFIG["bf16"],
+        fp16=TRAINING_CONFIG["fp16"],
+        logging_steps=TRAINING_CONFIG["logging_steps"],
+        save_steps=TRAINING_CONFIG["save_steps"],
+        save_total_limit=TRAINING_CONFIG["save_total_limit"],
+        seed=TRAINING_CONFIG["seed"],
+        num_generations=GRPO_CONFIG["num_generations"],
+        temperature=GRPO_CONFIG["temperature"],
+        beta=GRPO_CONFIG["beta"],
+        max_completion_length=MODEL_CONFIG["max_completion_length"],
+        max_prompt_length=MODEL_CONFIG["max_prompt_length"],
+    )
+
+    def reward_fn(completions, **kwargs):
+        """Placeholder reward function — replace with your own."""
+        return [1.0 if len(c) > 10 else 0.0 for c in completions]
+
+    trainer = GRPOTrainer(
+        model=model,
+        args=training_args,
+        train_dataset=train_dataset,
+        eval_dataset=eval_dataset,
+        processing_class=tokenizer,
+        reward_funcs=reward_fn,
+    )
+
+{{- else if eq .RlVariant "orpo"}}
+    training_args = ORPOConfig(
+        output_dir=TRAINING_CONFIG["output_dir"],
+        per_device_train_batch_size=TRAINING_CONFIG["per_device_train_batch_size"],
+        gradient_accumulation_steps=TRAINING_CONFIG["gradient_accumulation_steps"],
+        num_train_epochs=TRAINING_CONFIG["num_train_epochs"],
+        max_steps=TRAINING_CONFIG["max_steps"],
+        learning_rate=TRAINING_CONFIG["learning_rate"],
+        weight_decay=TRAINING_CONFIG["weight_decay"],
+        warmup_ratio=TRAINING_CONFIG["warmup_ratio"],
+        warmup_steps=TRAINING_CONFIG["warmup_steps"],
+        lr_scheduler_type=TRAINING_CONFIG["lr_scheduler_type"],
+        optim=TRAINING_CONFIG["optim"],
+        max_grad_norm=TRAINING_CONFIG["max_grad_norm"],
+        bf16=TRAINING_CONFIG["bf16"],
+        fp16=TRAINING_CONFIG["fp16"],
+        logging_steps=TRAINING_CONFIG["logging_steps"],
+        save_steps=TRAINING_CONFIG["save_steps"],
+        save_total_limit=TRAINING_CONFIG["save_total_limit"],
+        seed=TRAINING_CONFIG["seed"],
+        beta=ORPO_CONFIG["beta"],
+        max_length=MODEL_CONFIG["max_seq_length"],
+        max_prompt_length=MODEL_CONFIG["max_prompt_length"],
+    )
+
+    trainer = ORPOTrainer(
+        model=model,
+        args=training_args,
+        train_dataset=train_dataset,
+        eval_dataset=eval_dataset,
+        processing_class=tokenizer,
+    )
+{{- end}}
+
+    trainer.train()
+
+    save_method = SAVE_CONFIG["save_method"]
+    output = TRAINING_CONFIG["output_dir"] + "/final"
+
+    if save_method == "merged_16bit":
+        model.save_pretrained_merged(output, tokenizer, save_method="merged_16bit")
+    elif save_method == "merged_4bit":
+        model.save_pretrained_merged(output, tokenizer, save_method="merged_4bit")
+    elif save_method == "lora":
+        model.save_pretrained_merged(output, tokenizer, save_method="lora")
+    elif save_method == "gguf_q8_0":
+        model.save_pretrained_gguf(output, tokenizer, quantization_method="q8_0")
+    elif save_method == "gguf_q4_k_m":
+        model.save_pretrained_gguf(output, tokenizer, quantization_method="q4_k_m")
+    else:
+        model.save_pretrained(output)
+        tokenizer.save_pretrained(output)
+
+    if SAVE_CONFIG["push_to_hub"]:
+{{- if .HubModelId}}
+        model.push_to_hub_merged(
+            SAVE_CONFIG["hub_model_id"],
+            tokenizer,
+            save_method=save_method,
+{{- if .HubToken}}
+            token=SAVE_CONFIG["hub_token"],
+{{- end}}
+        )
+{{- end}}
+
+    print(f"{{ .RlVariant | upper }} training complete. Model saved to {output} ({save_method})")

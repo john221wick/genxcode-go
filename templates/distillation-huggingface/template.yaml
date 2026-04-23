@@ -1,0 +1,6 @@
+name: distillation-huggingface
+description: API-based knowledge distillation with pretrained HuggingFace student
+aliases:
+  - distill-hf
+  - distill-huggingface
+apply_hint: Install deps with `pip install -r requirements.txt`, then run `python main.py`

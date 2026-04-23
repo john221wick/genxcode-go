@@ -1,0 +1,26 @@
+from .config import TRAINING_CONFIG
+from .generate import generate_text
+
+
+def rejection_sampling(model, prompts, teacher, tokenizer):
+    """Generate multiple student responses, teacher scores them, keep best."""
+    n_candidates = TRAINING_CONFIG["n_candidates"]
+    keep_top = TRAINING_CONFIG["keep_top"]
+    refined_data = []
+
+    for i, prompt in enumerate(prompts):
+        candidates = []
+
+        for _ in range(n_candidates):
+            response = generate_text(model, tokenizer, prompt, max_new_tokens=256, temperature=1.0)
+            score = teacher.score(prompt, response)
+            candidates.append((response, score))
+
+        candidates.sort(key=lambda x: x[1], reverse=True)
+        for response, score in candidates[:keep_top]:
+            refined_data.append({"prompt": prompt, "response": response})
+
+        if (i + 1) % 50 == 0:
+            print(f"Rejection sampling: {i + 1}/{len(prompts)}")
+
+    return refined_data

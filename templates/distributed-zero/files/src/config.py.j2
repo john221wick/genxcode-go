@@ -1,0 +1,24 @@
+MODEL_CONFIG = {
+    "hidden_dim": {{ .HiddenDim }},
+    "num_layers": {{ .NumLayers }},
+    "num_heads": {{ .NumHeads }},
+    "vocab_size": {{ .VocabSize }},
+    "seq_len": {{ .SeqLen }},
+}
+
+ZERO_CONFIG = {
+    "stage": {{ .ZeroStage }},
+    "world_size": {{ .WorldSize }},
+    "backend": "{{ .Backend }}",
+}
+
+TRAINING_CONFIG = {
+    "project_name": "{{ .Name }}",
+    "precision": "{{ .Precision }}",
+    "lr": {{ .Lr }},
+    "epochs": {{ .Epochs }},
+    "batch_size": {{ .BatchSize }},
+    "gradient_accumulation_steps": {{ .GradientAccumulationSteps }},
+    "max_grad_norm": {{ .MaxGradNorm }},
+    "device": "{{ .Device }}",
+}

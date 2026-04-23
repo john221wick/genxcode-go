@@ -1,0 +1,178 @@
+"""Mixture-of-Experts layer with Expert Parallelism.
+
+Router: top-k gating with load balancing auxiliary loss.
+Dispatch: all-to-all to send tokens to expert-owning ranks.
+Combine: all-to-all to return processed tokens.
+
+With {{ .NumExperts }} experts across {{ .EpSize }} EP ranks:
+  each rank owns {{ .NumExperts }} // {{ .EpSize }} experts.
+"""
+
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+import torch.distributed as dist
+
+from .config import MOE_CONFIG
+
+
+class Expert(nn.Module):
+    """Single expert — SwiGLU FFN."""
+
+    def __init__(self, hidden_dim):
+        super().__init__()
+        intermediate = 4 * hidden_dim
+        self.gate_proj = nn.Linear(hidden_dim, intermediate, bias=False)
+        self.up_proj = nn.Linear(hidden_dim, intermediate, bias=False)
+        self.down_proj = nn.Linear(intermediate, hidden_dim, bias=False)
+
+    def forward(self, x):
+        return self.down_proj(F.silu(self.gate_proj(x)) * self.up_proj(x))
+
+
+class TopKRouter(nn.Module):
+    """Top-k gating with auxiliary load-balancing loss."""
+
+    def __init__(self, hidden_dim, num_experts, top_k):
+        super().__init__()
+        self.num_experts = num_experts
+        self.top_k = top_k
+        self.gate = nn.Linear(hidden_dim, num_experts, bias=False)
+
+    def forward(self, x):
+        # x: (num_tokens, hidden_dim)
+        logits = self.gate(x)  # (num_tokens, num_experts)
+        probs = F.softmax(logits, dim=-1)
+
+        top_k_probs, top_k_indices = torch.topk(probs, self.top_k, dim=-1)
+        top_k_probs = top_k_probs / top_k_probs.sum(dim=-1, keepdim=True)
+
+        # Load balancing loss
+        tokens_per_expert = torch.zeros(self.num_experts, device=x.device)
+        for k in range(self.top_k):
+            tokens_per_expert.scatter_add_(
+                0, top_k_indices[:, k], torch.ones_like(top_k_indices[:, k], dtype=torch.float)
+            )
+        fraction_routed = tokens_per_expert / x.shape[0]
+        avg_prob = probs.mean(dim=0)
+        load_balance_loss = self.num_experts * (fraction_routed * avg_prob).sum()
+
+        return top_k_probs, top_k_indices, load_balance_loss
+
+
+class MoELayer(nn.Module):
+    """MoE with expert parallelism via all-to-all."""
+
+    def __init__(self, hidden_dim, ep_group):
+        super().__init__()
+        self.ep_group = ep_group
+        self.ep_size = dist.get_world_size(ep_group)
+        self.ep_rank = dist.get_rank(ep_group)
+
+        self.num_experts = MOE_CONFIG["num_experts"]
+        self.top_k = MOE_CONFIG["top_k"]
+        self.num_shared = MOE_CONFIG["num_shared_experts"]
+        self.load_balance_alpha = MOE_CONFIG["load_balance_alpha"]
+
+        self.experts_per_rank = self.num_experts // self.ep_size
+        self.router = TopKRouter(hidden_dim, self.num_experts, self.top_k)
+
+        # Local experts
+        self.local_experts = nn.ModuleList(
+            [Expert(hidden_dim) for _ in range(self.experts_per_rank)]
+        )
+
+        # Shared expert (runs on every rank, not routed)
+        if self.num_shared > 0:
+            self.shared_expert = Expert(hidden_dim)
+
+    def _expert_owner(self, expert_idx):
+        return expert_idx // self.experts_per_rank
+
+    def _local_expert_idx(self, expert_idx):
+        return expert_idx % self.experts_per_rank
+
+    def forward(self, x):
+        """
+        x: (B, T, C) -> (B, T, C)
+        """
+        B, T, C = x.shape
+        x_flat = x.reshape(-1, C)  # (N, C) where N = B*T
+        N = x_flat.shape[0]
+
+        top_k_probs, top_k_indices, lb_loss = self.router(x_flat)
+
+        # --- Dispatch via all-to-all ---
+        # Count how many tokens each rank needs to receive
+        send_counts = torch.zeros(self.ep_size, dtype=torch.long, device=x.device)
+        for k in range(self.top_k):
+            owners = top_k_indices[:, k] // self.experts_per_rank
+            for r in range(self.ep_size):
+                send_counts[r] += (owners == r).sum()
+
+        # Gather receive counts from all ranks
+        recv_counts = torch.zeros_like(send_counts)
+        dist.all_to_all_single(recv_counts, send_counts, group=self.ep_group)
+
+        # Sort tokens by destination rank
+        token_expert_pairs = []
+        for k in range(self.top_k):
+            for i in range(N):
+                expert_idx = top_k_indices[i, k].item()
+                owner = self._expert_owner(expert_idx)
+                local_idx = self._local_expert_idx(expert_idx)
+                token_expert_pairs.append((owner, local_idx, i, k, top_k_probs[i, k]))
+
+        token_expert_pairs.sort(key=lambda t: t[0])
+
+        # Pack tokens to send
+        send_tokens = torch.stack([x_flat[p[2]] for p in token_expert_pairs])
+        send_expert_ids = torch.tensor([p[1] for p in token_expert_pairs], device=x.device)
+
+        # All-to-all exchange
+        total_recv = recv_counts.sum().item()
+        recv_tokens = torch.empty(total_recv, C, device=x.device, dtype=x.dtype)
+        recv_expert_ids = torch.empty(total_recv, device=x.device, dtype=torch.long)
+
+        send_splits = send_counts.tolist()
+        recv_splits = recv_counts.tolist()
+
+        dist.all_to_all_single(
+            recv_tokens, send_tokens,
+            output_split_sizes=recv_splits,
+            input_split_sizes=send_splits,
+            group=self.ep_group,
+        )
+        dist.all_to_all_single(
+            recv_expert_ids, send_expert_ids,
+            output_split_sizes=recv_splits,
+            input_split_sizes=send_splits,
+            group=self.ep_group,
+        )
+
+        # --- Process with local experts ---
+        processed = torch.zeros_like(recv_tokens)
+        for e_idx in range(self.experts_per_rank):
+            mask = recv_expert_ids == e_idx
+            if mask.any():
+                processed[mask] = self.local_experts[e_idx](recv_tokens[mask])
+
+        # --- Return via all-to-all ---
+        returned = torch.empty_like(send_tokens)
+        dist.all_to_all_single(
+            returned, processed,
+            output_split_sizes=send_splits,
+            input_split_sizes=recv_splits,
+            group=self.ep_group,
+        )
+
+        # --- Combine with routing weights ---
+        output = torch.zeros_like(x_flat)
+        for idx, (owner, local_idx, token_idx, k, weight) in enumerate(token_expert_pairs):
+            output[token_idx] += weight * returned[idx]
+
+        # Add shared expert
+        if self.num_shared > 0:
+            output = output + self.shared_expert(x_flat)
+
+        return output.reshape(B, T, C), lb_loss * self.load_balance_alpha

@@ -1,0 +1,69 @@
+MODEL_CONFIG = {
+    "model_name": "{{ .ModelName }}",
+    "max_seq_length": {{ .MaxSeqLength }},
+{{- if .UseLora}}
+    "use_lora": True,
+    "lora_r": {{ .LoraR }},
+    "lora_alpha": {{ .LoraAlpha }},
+    "lora_dropout": {{ .LoraDropout }},
+    "lora_target_modules": {{ .LoraTargetModules | split "," | json }},
+{{- else}}
+    "use_lora": False,
+{{- end}}
+{{- if .LoadIn4bit}}
+    "load_in_4bit": True,
+    "bnb_4bit_quant_type": "{{ .Bnb4bitQuantType }}",
+    "bnb_4bit_compute_dtype": "{{ .Bnb4bitComputeDtype }}",
+{{- else if .LoadIn8bit}}
+    "load_in_8bit": True,
+{{- end}}
+    "gradient_checkpointing": {{ if .GradientCheckpointing }}True{{ else }}False{{ end }},
+}
+
+DATASET_CONFIG = {
+    "dataset_name": "{{ .DatasetName }}",
+    "dataset_text_field": "{{ .DatasetTextField }}",
+    "packing": {{ if .Packing }}True{{ else }}False{{ end }},
+    "num_proc": {{ .NumProc }},
+{{- if ne .ChatTemplate "none"}}
+    "chat_template": "{{ .ChatTemplate }}",
+{{- end}}
+{{- if .SystemPrompt}}
+    "system_prompt": "{{ .SystemPrompt }}",
+{{- end}}
+}
+
+TRAINING_CONFIG = {
+    "output_dir": "{{ .OutputDir }}",
+    "per_device_train_batch_size": {{ .PerDeviceTrainBatchSize }},
+    "per_device_eval_batch_size": {{ .PerDeviceEvalBatchSize }},
+    "gradient_accumulation_steps": {{ .GradientAccumulationSteps }},
+    "num_train_epochs": {{ .NumTrainEpochs }},
+    "max_steps": {{ .MaxSteps }},
+    "learning_rate": {{ .LR }},
+    "weight_decay": {{ .WeightDecay }},
+    "warmup_ratio": {{ .WarmupRatio }},
+    "warmup_steps": {{ .WarmupSteps }},
+    "lr_scheduler_type": "{{ .LrSchedulerType }}",
+    "optim": "{{ .Optim }}",
+    "max_grad_norm": {{ .MaxGradNorm }},
+    "bf16": {{ if .Bf16 }}True{{ else }}False{{ end }},
+    "fp16": {{ if .Fp16 }}True{{ else }}False{{ end }},
+    "logging_steps": {{ .LoggingSteps }},
+    "save_steps": {{ .SaveSteps }},
+    "save_total_limit": {{ .SaveTotalLimit }},
+    "eval_steps": {{ .EvalSteps }},
+    "eval_strategy": "{{ .EvalStrategy }}",
+    "report_to": "{{ .ReportTo }}",
+    "seed": {{ .Seed }},
+}
+
+HUB_CONFIG = {
+    "push_to_hub": {{ if .PushToHub }}True{{ else }}False{{ end }},
+{{- if .HubModelId}}
+    "hub_model_id": "{{ .HubModelId }}",
+{{- end}}
+{{- if .HubToken}}
+    "hub_token": "{{ .HubToken }}",
+{{- end}}
+}

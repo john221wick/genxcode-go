@@ -1,0 +1,31 @@
+MODEL_CONFIG = {
+    "hidden_dim": {{ .HiddenDim }},
+    "num_layers": {{ .NumLayers }},
+    "num_heads": {{ .NumHeads }},
+    "vocab_size": {{ .VocabSize }},
+    "seq_len": {{ .SeqLen }},
+}
+
+MOE_CONFIG = {
+    "num_experts": {{ .NumExperts }},
+    "top_k": {{ .TopK }},
+    "ep_size": {{ .EpSize }},
+    "num_shared_experts": {{ .NumSharedExperts }},
+    "load_balance_alpha": {{ .LoadBalanceAlpha }},
+}
+
+EP_CONFIG = {
+    "ep_size": {{ .EpSize }},
+    "backend": "{{ .Backend }}",
+}
+
+TRAINING_CONFIG = {
+    "project_name": "{{ .Name }}",
+    "precision": "{{ .Precision }}",
+    "lr": {{ .LR }},
+    "epochs": {{ .Epochs }},
+    "batch_size": {{ .BatchSize }},
+    "gradient_accumulation_steps": {{ .GradientAccumulationSteps }},
+    "max_grad_norm": {{ .MaxGradNorm }},
+    "device": "{{ .Device }}",
+}

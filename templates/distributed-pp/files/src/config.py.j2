@@ -1,0 +1,24 @@
+MODEL_CONFIG = {
+    "hidden_dim": {{ .HiddenDim }},
+    "num_layers": {{ .NumLayers }},
+    "num_heads": {{ .NumHeads }},
+    "vocab_size": {{ .VocabSize }},
+    "seq_len": {{ .SeqLen }},
+}
+
+PP_CONFIG = {
+    "pp_size": {{ .PpSize }},
+    "num_micro_batches": {{ .NumMicroBatches }},
+    "schedule": "{{ .Schedule }}",
+    "backend": "{{ .Backend }}",
+}
+
+TRAINING_CONFIG = {
+    "project_name": "{{ .Name }}",
+    "precision": "{{ .Precision }}",
+    "lr": {{ .Lr }},
+    "epochs": {{ .Epochs }},
+    "batch_size": {{ .BatchSize }},
+    "max_grad_norm": {{ .MaxGradNorm }},
+    "device": "{{ .Device }}",
+}

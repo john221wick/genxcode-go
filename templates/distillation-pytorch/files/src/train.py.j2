@@ -1,0 +1,49 @@
+import torch
+import torch.nn.functional as F
+from torch.utils.data import DataLoader
+
+from .config import STUDENT_CONFIG, TRAINING_CONFIG
+from .dataset import DistillationDataset
+
+
+def train_student(model, train_data, tokenizer):
+    """Train PyTorch student on teacher-generated data."""
+    dataset = DistillationDataset(train_data, tokenizer, STUDENT_CONFIG["context_length"])
+    loader = DataLoader(dataset, batch_size=TRAINING_CONFIG["batch_size"], shuffle=True)
+
+    optimizer = torch.optim.AdamW(model.parameters(), lr=TRAINING_CONFIG["lr"], weight_decay=0.1)
+    device = torch.device(TRAINING_CONFIG["device"])
+    model = model.to(device)
+    model.train()
+
+    epochs = TRAINING_CONFIG["epochs"]
+    vocab_size = STUDENT_CONFIG["vocab_size"]
+
+    for epoch in range(epochs):
+        total_loss = 0
+        for batch in loader:
+            input_ids = batch["input_ids"].to(device)
+            labels = batch["labels"].to(device)
+
+            logits = model(input_ids)
+
+            shift_logits = logits[:, :-1, :].contiguous()
+            shift_labels = labels[:, 1:].contiguous()
+
+            loss = F.cross_entropy(
+                shift_logits.view(-1, vocab_size),
+                shift_labels.view(-1),
+                ignore_index=-100,
+            )
+
+            optimizer.zero_grad()
+            loss.backward()
+            torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+            optimizer.step()
+
+            total_loss += loss.item()
+
+        avg = total_loss / len(loader)
+        print(f"Epoch {epoch + 1}/{epochs} | Loss: {avg:.4f}")
+
+    return model

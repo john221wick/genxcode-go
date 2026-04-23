@@ -1,0 +1,103 @@
+RL_CONFIG = {
+    "variant": "{{ .RlVariant }}",
+}
+
+MODEL_CONFIG = {
+    "model_name": "{{ .ModelName }}",
+{{ if .RefModelName }}
+    "ref_model_name": "{{ .RefModelName }}",
+{{ end }}
+{{ if .RewardModelName }}
+    "reward_model_name": "{{ .RewardModelName }}",
+{{ end }}
+    "max_seq_length": {{ .MaxSeqLength }},
+    "max_prompt_length": {{ .MaxPromptLength }},
+    "max_completion_length": {{ .MaxCompletionLength }},
+{{ if .UseLora }}
+    "use_lora": True,
+    "lora_r": {{ .LoraR }},
+    "lora_alpha": {{ .LoraAlpha }},
+    "lora_dropout": {{ .LoraDropout }},
+    "lora_target_modules": {{ json .LoraTargetModules }},
+{{ else }}
+    "use_lora": False,
+{{ end }}
+{{ if .LoadIn4bit }}
+    "load_in_4bit": True,
+    "bnb_4bit_quant_type": "{{ .Bnb4bitQuantType }}",
+    "bnb_4bit_compute_dtype": "{{ .Bnb4bitComputeDtype }}",
+{{ else if .LoadIn8bit }}
+    "load_in_8bit": True,
+{{ end }}
+    "gradient_checkpointing": {{ if .GradientCheckpointing }}True{{ else }}False{{ end }},
+}
+
+{{ if eq .RlVariant "dpo" }}
+DPO_CONFIG = {
+    "beta": {{ .Beta }},
+    "loss_type": "{{ .LossType }}",
+    "label_smoothing": {{ .LabelSmoothing }},
+}
+{{ else if eq .RlVariant "grpo" }}
+GRPO_CONFIG = {
+    "num_generations": {{ .NumGenerations }},
+    "temperature": {{ .Temperature }},
+    "beta": {{ .Beta }},
+{{ if .RewardWeights }}
+    "reward_weights": {{ json .RewardWeights }},
+{{ end }}
+}
+{{ else if eq .RlVariant "ppo" }}
+PPO_CONFIG = {
+    "temperature": {{ .Temperature }},
+}
+{{ else if eq .RlVariant "orpo" }}
+ORPO_CONFIG = {
+    "beta": {{ .Beta }},
+}
+{{ else if eq .RlVariant "kto" }}
+KTO_CONFIG = {
+    "beta": {{ .Beta }},
+    "desirable_weight": {{ .KtoDesirableWeight }},
+    "undesirable_weight": {{ .KtoUndesirableWeight }},
+}
+{{ end }}
+
+DATASET_CONFIG = {
+    "dataset_name": "{{ .DatasetName }}",
+}
+
+TRAINING_CONFIG = {
+    "output_dir": "{{ .OutputDir }}",
+    "per_device_train_batch_size": {{ .PerDeviceTrainBatchSize }},
+    "per_device_eval_batch_size": {{ .PerDeviceEvalBatchSize }},
+    "gradient_accumulation_steps": {{ .GradientAccumulationSteps }},
+    "num_train_epochs": {{ .NumTrainEpochs }},
+    "max_steps": {{ .MaxSteps }},
+    "learning_rate": {{ .Lr }},
+    "weight_decay": {{ .WeightDecay }},
+    "warmup_ratio": {{ .WarmupRatio }},
+    "warmup_steps": {{ .WarmupSteps }},
+    "lr_scheduler_type": "{{ .LrSchedulerType }}",
+    "optim": "{{ .Optim }}",
+    "max_grad_norm": {{ .MaxGradNorm }},
+    "bf16": {{ if .Bf16 }}True{{ else }}False{{ end }},
+    "fp16": {{ if .Fp16 }}True{{ else }}False{{ end }},
+    "logging_steps": {{ .LoggingSteps }},
+    "save_steps": {{ .SaveSteps }},
+    "save_total_limit": {{ .SaveTotalLimit }},
+    "eval_steps": {{ .EvalSteps }},
+    "eval_strategy": "{{ .EvalStrategy }}",
+    "report_to": "{{ .ReportTo }}",
+    "seed": {{ .Seed }},
+}
+
+HUB_CONFIG = {
+    "push_to_hub": {{ if .PushToHub }}True{{ else }}False{{ end }},
+{{ if .HubModelId }}
+    "hub_model_id": "{{ .HubModelId }}",
+{{ end }}
+{{ if .HubToken }}
+    "hub_token": "{{ .HubToken }}",
+{{ end }}
+}

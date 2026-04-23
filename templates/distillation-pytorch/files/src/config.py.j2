@@ -1,0 +1,33 @@
+STUDENT_CONFIG = {
+    "vocab_size": 50257,
+    "context_length": {{ .ContextLength }},
+    "emb_dim": {{ .EmbDim }},
+    "n_heads": {{ .NHeads }},
+    "n_layers": {{ .NLayers }},
+    "drop_rate": {{ .DropRate }},
+    "qkv_bias": {{ if .QkvBias }}True{{ else }}False{{ end }},
+}
+
+TEACHER_CONFIG = {
+    "provider": "{{ .TeacherProvider }}",
+    "model": "{{ .TeacherModel }}",
+    "temperature": {{ .Temperature }},
+    "max_tokens": {{ .MaxTokens }},
+}
+
+TRAINING_CONFIG = {
+    "project_name": "{{ .Name }}",
+    "technique": "{{ .Technique }}",
+    "epochs": {{ .Epochs }},
+    "lr": {{ .Lr }},
+    "batch_size": {{ .BatchSize }},
+    "device": "{{ .Device }}",
+{{ if or (eq .Technique "rejection_sampling") (eq .Technique "feedback_loop") }}
+    "n_candidates": {{ .NCandidates }},
+    "keep_top": {{ .KeepTop }},
+{{ end }}
+{{ if eq .Technique "feedback_loop" }}
+    "rl_variant": "{{ .RlVariant }}",
+    "n_iterations": {{ .NIterations }},
+{{ end }}
+}

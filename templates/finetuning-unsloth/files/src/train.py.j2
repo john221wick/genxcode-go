@@ -1,0 +1,75 @@
+from trl import SFTTrainer, SFTConfig
+from unsloth import FastLanguageModel
+
+from .config import MODEL_CONFIG, DATASET_CONFIG, TRAINING_CONFIG, SAVE_CONFIG
+from .model import load_model_and_tokenizer
+from .data import load_and_prepare_dataset
+
+
+def train():
+    model, tokenizer = load_model_and_tokenizer()
+    dataset = load_and_prepare_dataset(tokenizer)
+
+    sft_config = SFTConfig(
+        output_dir=TRAINING_CONFIG["output_dir"],
+        per_device_train_batch_size=TRAINING_CONFIG["per_device_train_batch_size"],
+        gradient_accumulation_steps=TRAINING_CONFIG["gradient_accumulation_steps"],
+        num_train_epochs=TRAINING_CONFIG["num_train_epochs"],
+        max_steps=TRAINING_CONFIG["max_steps"],
+        learning_rate=TRAINING_CONFIG["learning_rate"],
+        weight_decay=TRAINING_CONFIG["weight_decay"],
+        warmup_steps=TRAINING_CONFIG["warmup_steps"],
+        warmup_ratio=TRAINING_CONFIG["warmup_ratio"],
+        lr_scheduler_type=TRAINING_CONFIG["lr_scheduler_type"],
+        optim=TRAINING_CONFIG["optim"],
+        max_grad_norm=TRAINING_CONFIG["max_grad_norm"],
+        bf16=TRAINING_CONFIG["bf16"],
+        fp16=TRAINING_CONFIG["fp16"],
+        logging_steps=TRAINING_CONFIG["logging_steps"],
+        save_steps=TRAINING_CONFIG["save_steps"],
+        save_total_limit=TRAINING_CONFIG["save_total_limit"],
+        seed=TRAINING_CONFIG["seed"],
+        max_seq_length=MODEL_CONFIG["max_seq_length"],
+        packing=DATASET_CONFIG["packing"],
+        dataset_text_field=DATASET_CONFIG["dataset_text_field"],
+    )
+
+    trainer = SFTTrainer(
+        model=model,
+        tokenizer=tokenizer,
+        args=sft_config,
+        train_dataset=dataset,
+    )
+
+    trainer.train()
+
+    save_method = SAVE_CONFIG["save_method"]
+    output = TRAINING_CONFIG["output_dir"] + "/final"
+
+    if save_method == "merged_16bit":
+        model.save_pretrained_merged(output, tokenizer, save_method="merged_16bit")
+    elif save_method == "merged_4bit":
+        model.save_pretrained_merged(output, tokenizer, save_method="merged_4bit")
+    elif save_method == "lora":
+        model.save_pretrained_merged(output, tokenizer, save_method="lora")
+    elif save_method == "gguf_q8_0":
+        model.save_pretrained_gguf(output, tokenizer, quantization_method="q8_0")
+    elif save_method == "gguf_q4_k_m":
+        model.save_pretrained_gguf(output, tokenizer, quantization_method="q4_k_m")
+    else:
+        model.save_pretrained(output)
+        tokenizer.save_pretrained(output)
+
+    if SAVE_CONFIG["push_to_hub"]:
+{{ if .HubModelId }}
+        model.push_to_hub_merged(
+            SAVE_CONFIG["hub_model_id"],
+            tokenizer,
+            save_method=save_method,
+{{ if .HubToken }}
+            token=SAVE_CONFIG["hub_token"],
+{{ end }}
+        )
+{{ end }}
+
+    print(f"Training complete. Model saved to {output} ({save_method})")
